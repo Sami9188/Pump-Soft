@@ -1,0 +1,15 @@
+1- intsead of product use nozzels 
+2- edit and delete nozzels reading 
+3- pdf ko export krny sa phly preview krna ha
+4- just show customer odhar or wasoli in pdf also
+5- gain lose tank wise 
+6- manger only update or delete its own entry not the admin entry 
+7- categorize reading on the basis of nozzels 
+8- when recoding reading show the nozzels names intsead of product 
+
+
+1- share odhar share wasoli button remove these and buttons for adding new trasction (odhar or wasooli)
+3- remove customer from sales and sales return  
+2- remove sales and sales return from this 
+9- remove whatsapp and message button and add odhar and wasoli buttons in action for banks and supplier and customers (not remove from customer )
+10- add date select for reciepts in these 

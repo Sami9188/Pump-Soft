@@ -1,0 +1,110 @@
+a {
+    text-decoration: none;
+}
+
+.ant-form-item-control-input-content {
+    width: 100% !important;
+}
+
+/* .date-input {} */
+
+/* General container styling */
+.supplier-management-card {
+    padding: 24px;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Styling for the header section */
+.supplier-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+/* Styling for the date range filter container in modals */
+.date-range-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    /* Spacing between elements */
+    /* margin-bottom: 16px; */
+    flex-wrap: wrap;
+}
+
+/* Label styling for date inputs */
+.date-range-label {
+    font-weight: 500;
+    color: #333;
+}
+
+/* Common style for native date inputs used in filter bars */
+.date-input {
+    padding: 8px 12px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #333;
+    background-color: #fff;
+    transition: all 0.3s;
+    outline: none;
+    height: 40px;
+    /* Consistent height */
+}
+
+.date-input:hover {
+    border-color: #40a9ff;
+    /* Ant Design primary color */
+}
+
+.date-input:focus {
+    border-color: #40a9ff;
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+/* Specific style for the date input inside the Ant Design Form.Item */
+.date-input-form {
+    width: 100%;
+    /* Make it fill the form item */
+    padding: 8px 12px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #333;
+    background-color: #fff;
+    transition: all 0.3s;
+    outline: none;
+    height: 40px;
+    /* Consistent height */
+}
+
+.date-input-form:hover {
+    border-color: #40a9ff;
+}
+
+.date-input-form:focus {
+    border-color: #40a9ff;
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+/* Style for the date picker icon to look more modern */
+.date-input::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.date-input::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
+
+.date-input-form::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.date-input-form::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}

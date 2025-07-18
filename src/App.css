@@ -1,0 +1,68 @@
+@import "../src/css/index.css";
+
+a {
+    text-decoration: none;
+}
+
+.btn-sales-invoice {
+    background-color: #007bff;
+    /* Bootstrap primary */
+    border-color: #007bff;
+    color: #fff;
+}
+
+.btn-sales-return {
+    background-color: #28a745;
+    /* Bootstrap success */
+    border-color: #28a745;
+    color: #fff;
+}
+
+.btn-purchase-invoice {
+    background-color: #ffc107;
+    /* Bootstrap warning */
+    border-color: #ffc107;
+    color: #212529;
+}
+
+.btn-purchase-return {
+    background-color: #dc3545;
+    /* Bootstrap danger */
+    border-color: #dc3545;
+    color: #fff;
+}
+
+.btn-adjustments {
+    background-color: #17a2b8;
+    /* Bootstrap info */
+    border-color: #17a2b8;
+    color: #fff;
+}
+
+.btn-record-reading {
+    background-color: #6f42c1;
+    /* Custom purple */
+    border-color: #6f42c1;
+    color: #fff;
+}
+
+.btn-dip-chart {
+    background-color: #20c997;
+    /* Bootstrap teal */
+    border-color: #20c997;
+    color: #fff;
+}
+
+.btn-preview-pdf {
+    background-color: #343a40;
+    /* Bootstrap dark */
+    border-color: #343a40;
+    color: #fff;
+}
+
+.btn-export-pdf {
+    background-color: #f8f9fa;
+    /* Bootstrap light */
+    border-color: #f8f9fa;
+    color: #212529;
+}

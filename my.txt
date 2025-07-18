@@ -1,0 +1,26 @@
+1- add button for add purchase order/purchase return only update the tank volume  
+2- sales return add stock plus total cash minus
+3- purchase type diesel + pertrol update the stock in tank didn't add amount in total  
+    type 2  moblies + other didn't update the stock in tank and add amount in total
+4- add button for open model where form appears and show the user input for these all user can enter zero or any amount 
+        advace cash, odhar, bank payemnt, karaya minus from grand total   
+        wasool add in grand total 
+create a form for this  
+5- add odhar of one day daily report (sum of all odhar of all users) 
+6- add wasoli of one day daily report (sum of all wasoli of all users) 
+
+
+7- date only admin can change dates (DONE)
+8- add bank Expense in account type (DONE)
+9- sub menu for account type (bank,supplier,customer) (DONE)
+10- total credit show the reaminig amount remove city and show customer balance credit or debit (DONE)
+11- same for bank as 10 (DONE)
+12- manager can see daily report and customer only (DONE)
+13- salesman only see customer can't perform any task  (DONE)
+14- add sms and whatsapp for sales and purchase odhar or wasooli (DONE)
+
+
+15- profit and lose in dashboard
+16- add all tanks remainig in dashboard
+
+
