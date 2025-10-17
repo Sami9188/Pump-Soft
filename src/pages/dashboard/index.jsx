@@ -16,7 +16,7 @@ import DailyReport from "./DailyReport"
 import AccountDetails from "./Account"
 import TankDetails from "./TankDetails"
 import Bills from "./Bills";
-import Cashflow from "./CashInOut";
+import CashflowPage from "./CashInOut";
 
 
 export default function Dashboard() {
@@ -114,7 +114,7 @@ export default function Dashboard() {
                     path="cashflow"
                     element={
                         <PrivateRoute
-                            component={Cashflow}
+                            component={CashflowPage}
                             allowedRoles={["admin"]}
                             redirectPath="/dashboard/access-denied"
                         />
