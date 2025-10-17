@@ -1,22 +1,7 @@
 import moment from 'moment-timezone';
 
 // Default server timezone - you can configure this based on your server location
-const DEFAULT_SERVER_TIMEZONE = 'Asia/Karachi'; // Paki    fetchServerTime: async () => {
-        try {
-            // Fetch time from our own serverless function proxy
-            const response = await fetch('/api/time');
-            if (!response.ok) {
-                throw new Error(`Failed to fetch time: ${response.statusText}`);
-            }
-            const data = await response.json();
-            // The 'datetime' property from the API is an ISO 8601 string
-            return moment.tz(data.datetime, serverTimezone);
-        } catch (error) {
-            console.error('Error fetching server time, falling back to local time.', error);
-            // Fallback to local time if API fails
-            return moment.tz(serverTimezone);
-        }
-    }djust as needed
+const DEFAULT_SERVER_TIMEZONE = 'Asia/Karachi'; // Pakistan timezone - adjust as needed
 
 // Global timezone configuration
 let serverTimezone = DEFAULT_SERVER_TIMEZONE;
