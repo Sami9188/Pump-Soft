@@ -32,6 +32,7 @@ import {
     DownloadOutlined,
 } from '@ant-design/icons';
 import moment from 'moment';
+import TimezoneService from '../../../services/timezoneService';
 import { collection, addDoc, getDocs, doc, updateDoc, getDoc, deleteDoc, query, orderBy, Timestamp, increment, writeBatch, where, limit, serverTimestamp, deleteField } from 'firebase/firestore';
 import { useAuth } from '../../../context/AuthContext';
 import { db } from '../../../config/firebase';
@@ -77,6 +78,10 @@ function BillingPage() {
     const [isExportModalVisible, setIsExportModalVisible] = useState(false);
     const [exportPreviewData, setExportPreviewData] = useState([]);
     const [exportPreviewTotals, setExportPreviewTotals] = useState({ cash: 0, odhar: 0, total: 0 });
+    const [printerSettings, setPrinterSettings] = useState({
+        fontSize: 'large', // 'small', 'medium', 'large'
+        paperWidth: 58 // mm
+    });
 
     useEffect(() => {
         fetchCustomers();
@@ -144,9 +149,10 @@ function BillingPage() {
                 let billDate = null;
                 if (data.date) {
                     if (data.date instanceof Timestamp) {
-                        billDate = moment(data.date.toDate());
-                    } else {
-                        billDate = moment(data.date);
+                        billDate = TimezoneService.fromFirebaseTimestamp(data.date);
+                    } else if (typeof data.date === 'string') {
+                        // Handle legacy string dates
+                        billDate = TimezoneService.toServerMoment(data.date);
                     }
                 }
                 return {
@@ -176,8 +182,8 @@ function BillingPage() {
             filteredBills = filteredBills.filter(bill => bill.billType === filterType);
         }
         if (dateRange && dateRange[0] && dateRange[1]) {
-            const startDate = moment(dateRange[0]).startOf('day');
-            const endDate = moment(dateRange[1]).endOf('day');
+            const startDate = TimezoneService.toServerMoment(dateRange[0]).startOf('day');
+            const endDate = TimezoneService.toServerMoment(dateRange[1]).endOf('day');
             filteredBills = filteredBills.filter(bill => {
                 if (!bill.momentDate) return false;
                 return bill.momentDate.isSameOrAfter(startDate) && bill.momentDate.isSameOrBefore(endDate);
@@ -203,7 +209,7 @@ function BillingPage() {
     const handleNewBill = (type) => {
         setBillType(type);
         form.resetFields();
-        const today = new Date().toISOString().split('T')[0];
+        const today = TimezoneService.formatServerDate(null, 'YYYY-MM-DD');
         form.setFieldsValue({ date: today, productName: settings?.defaultProduct || 'Diesel' });
         setSelectedCustomer(null);
         setBillAmount(0);
@@ -225,14 +231,14 @@ function BillingPage() {
                 return;
             }
 
-            const billMoment = moment(values.date, 'YYYY-MM-DD').hour(12).minute(0).second(0);
+            const billMoment = TimezoneService.toServerMoment(values.date, 'YYYY-MM-DD').hour(12).minute(0).second(0);
             const originalAmount = values.quantity * values.rate;
             const discount = billType === 'cash' ? (values.discount || 0) : 0;
             const finalAmount = originalAmount - discount;
 
             const billData = {
                 billType,
-                date: billMoment.toISOString(),
+                date: Timestamp.fromDate(billMoment.toDate()),
                 originalAmount,
                 amount: finalAmount,
                 discount: billType === 'cash' ? discount : 0,
@@ -323,10 +329,11 @@ function BillingPage() {
                 const receiptRef = doc(collection(db, 'receipts'));
                 batch.set(receiptRef, {
                     accountId: selectedCustomer.id,
-                    date: billMoment.toISOString(),
+                    date: Timestamp.fromDate(billMoment.toDate()),
                     amount: -originalAmount,
                     transactionType: 'odhar',
                     note: `Bill on credit for ${values.productName}`,
+                    vehicleNumber: values.vehicleNumber || '',
                     createdAt: serverTimestamp(),
                     balanceAfter: newBalance,
                     billId: billRef.id,
@@ -368,7 +375,7 @@ function BillingPage() {
         setEditingBill(record);
         editForm.setFieldsValue({
             ...record,
-            date: record.displayDate,
+            date: record.displayDate || (record.date instanceof Timestamp ? TimezoneService.formatServerDate(record.date.toDate(), 'YYYY-MM-DD') : ''),
             customerId: record.customerId || undefined,
             vehicleNumber: record.vehicleNumber,
             productName: record.productName,
@@ -389,13 +396,13 @@ function BillingPage() {
             }
             const shiftId = shift.id;
 
-            const billDate = new Date(values.date);
+            const billDate = TimezoneService.createServerDate(values.date);
             const originalAmount = values.quantity * values.rate;
             const discount = editingBill.billType === 'cash' ? (values.discount || 0) : 0;
             const finalAmount = editingBill.billType === 'cash' ? originalAmount - discount : originalAmount;
 
             const billData = {
-                date: billDate.toISOString(),
+                date: Timestamp.fromDate(billDate),
                 quantity: values.quantity,
                 rate: values.rate,
                 originalAmount,
@@ -479,8 +486,9 @@ function BillingPage() {
                     const receiptRef = doc(db, 'receipts', editingBill.receiptId);
                     batch.update(receiptRef, {
                         accountId: values.customerId || editingBill.customerId,
-                        date: billDate.toISOString(),
+                        date: Timestamp.fromDate(billDate),
                         amount: -originalAmount,
+                        vehicleNumber: values.vehicleNumber || '',
                         balanceAfter: newBalanceAfterUpdate,
                     });
                 }
@@ -553,140 +561,481 @@ function BillingPage() {
     };
 
     /**
-     * **MODIFIED PRINT FUNCTION for 58mm THERMAL PRINTERS**
-     * This CSS is optimized to prevent side cutoffs and remove extra top margins.
+     * **BLUETOOTH THERMAL PRINTER FUNCTION**
+     * Creates JSON format for Bluetooth Print app with configurable font sizes
      */
     const handlePrint = (record) => {
-        const printContent = `
+        // Create thermal receipt format optimized for Bluetooth Print app
+        const companyName = (COMPANY_INFO.name || 'Your Company').toUpperCase();
+        const companyAddress = COMPANY_INFO.address || 'Company Address';
+        const companyPhone = COMPANY_INFO.phone || 'N/A';
+        
+        // Get font format for Bluetooth Print app - INCREASED BY 10X
+        const getFontFormat = (type) => {
+            const formats = {
+                header: 3,    // Double width for company name
+                normal: 2,    // Double height for regular text
+                total: 3      // Double width for total amount
+            };
+            return formats[type] || 2; // Default to double height
+        };
+        
+        // Build receipt content as JSON array for Bluetooth Print app
+        const printData = [];
+        
+                        // Company header (dynamically sized)
+        printData.push({
+            type: 0, // text
+            content: companyName,
+            bold: 1, // bold
+            align: 1, // center
+            format: getFontFormat('header') // Dynamic font size
+        });
+        
+        printData.push({
+            type: 0, // text
+            content: companyAddress,
+            bold: 1, // bold
+            align: 1, // center
+            format: getFontFormat('normal') // Dynamic font size
+        });
+        
+        printData.push({
+            type: 0, // text
+            content: `Tel: ${companyPhone}`,
+            bold: 1, // bold
+            align: 1, // center
+            format: getFontFormat('normal') // Dynamic font size
+        });
+        
+        // Separator line
+        printData.push({
+            type: 0, // text
+            content: '--------------------------------',
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+                        // Bill details (dynamically sized)
+        printData.push({
+            type: 0, // text
+            content: `Date: ${record.displayDate}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: getFontFormat('normal') // Dynamic font size
+        });
+        
+        printData.push({
+            type: 0, // text
+            content: `Bill No: ${record.id.substring(0, 8).toUpperCase()}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: getFontFormat('normal') // Dynamic font size
+        });
+        
+        if (record.customerName) {
+            printData.push({
+                type: 0, // text
+                content: `Customer: ${record.customerName}`,
+                bold: 1, // bold
+                align: 0, // left
+                format: 0 // normal
+            });
+        }
+        
+        if (record.vehicleNumber) {
+            printData.push({
+                type: 0, // text
+                content: `Vehicle: ${record.vehicleNumber}`,
+                bold: 1, // bold
+                align: 0, // left
+                format: 0 // normal
+            });
+        }
+        
+        printData.push({
+            type: 0, // text
+            content: `Product: ${record.productName || 'N/A'}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+        printData.push({
+            type: 0, // text
+            content: `Type: ${record.billType === 'cash' ? 'Cash' : 'Odhar'}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+        // Separator
+        printData.push({
+            type: 0, // text
+            content: '................................',
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+        // Quantity and rate (dynamically sized)
+        printData.push({
+            type: 0, // text
+            content: `Quantity: ${(record.quantity || 0).toLocaleString()}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: getFontFormat('normal') // Dynamic font size
+        });
+
+        printData.push({
+            type: 0, // text
+            content: `Rate: RS ${(record.rate || 0).toLocaleString()}`,
+            bold: 1, // bold
+            align: 0, // left
+            format: getFontFormat('normal') // Dynamic font size
+        });
+        
+        if (record.billType === 'cash') {
+            printData.push({
+                type: 0, // text
+                content: `Subtotal: RS ${(record.originalAmount || 0).toLocaleString()}`,
+                bold: 1, // bold
+                align: 0, // left
+                format: 0 // normal
+            });
+            
+            if (record.discount && record.discount > 0) {
+                printData.push({
+                    type: 0, // text
+                    content: `Discount: RS ${(record.discount || 0).toLocaleString()}`,
+                    bold: 1, // bold
+                    align: 0, // left
+                    format: 0 // normal
+                });
+            }
+        }
+        
+        // Separator
+        printData.push({
+            type: 0, // text
+            content: '--------------------------------',
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+        // Total amount (bold and centered, dynamically sized)
+        printData.push({
+            type: 0, // text
+            content: `TOTAL: RS ${(record.amount || 0).toLocaleString()}`,
+            bold: 1, // bold
+            align: 1, // center
+            format: getFontFormat('total') // Dynamic font size (largest)
+        });
+        
+        // Separator
+        printData.push({
+            type: 0, // text
+            content: '--------------------------------',
+            bold: 1, // bold
+            align: 0, // left
+            format: 0 // normal
+        });
+        
+        // Footer
+        printData.push({
+            type: 0, // text
+            content: 'Thank you for your business!',
+            bold: 1, // bold
+            align: 1, // center
+            format: 0 // normal
+        });
+        
+        printData.push({
+            type: 0, // text
+            content: TimezoneService.formatServerDate(null, 'YYYY-MM-DD HH:mm'),
+            bold: 1, // bold
+            align: 1, // center
+            format: 0 // normal
+        });
+        
+        // Empty lines for paper cut (more spacing for thermal printers)
+        printData.push({
+            type: 0, // text
+            content: ' ',
+            bold: 1, // bold
+            align: 0,
+            format: 0
+        });
+
+        printData.push({
+            type: 0, // text
+            content: ' ',
+            bold: 1, // bold
+            align: 0,
+            format: 0
+        });
+
+        printData.push({
+            type: 0, // text
+            content: ' ',
+            bold: 1, // bold
+            align: 0,
+            format: 0
+        });
+
+        printData.push({
+            type: 0, // text
+            content: ' ',
+            bold: 1, // bold
+            align: 0,
+            format: 0
+        });
+
+        printData.push({
+            type: 0, // text
+            content: ' ',
+            bold: 1, // bold
+            align: 0,
+            format: 0
+        });
+
+        // Create JSON data for Bluetooth Print app
+        const jsonData = JSON.stringify(printData);
+        
+        // Create a downloadable JSON file for Bluetooth Print app
+        const blob = new Blob([jsonData], { type: 'application/json' });
+        const jsonUrl = URL.createObjectURL(blob);
+        
+        // JSON data is ready for Bluetooth Print app if needed
+        
+        // Get dynamic font sizes based on printer settings - INCREASED BY 2X
+        const getFontSize = () => {
+            const sizes = {
+                small: { base: '24px', company: '28px', total: '28px' },
+                medium: { base: '28px', company: '32px', total: '32px' },
+                large: { base: '32px', company: '36px', total: '36px' }
+            };
+            return sizes[printerSettings.fontSize];
+        };
+        
+        const fontSizes = getFontSize();
+
+        // Also create a simple HTML page that can be printed
+        // This will work with the Bluetooth Print app if you save it as a file
+        const printHtml = `
+        <!DOCTYPE html>
         <html>
         <head>
-            <title>Print Bill</title>
+            <meta charset="UTF-8">
+            <title>Bill Receipt</title>
             <style>
+                                                body {
+                    font-family: 'Arial', 'Helvetica', sans-serif;
+                    font-size: ${fontSizes.base};
+                    font-weight: bold !important;
+                    line-height: 1.4;
+                    margin: 0;
+                    padding: 4mm;
+                    width: 100%;
+                    max-width: 100%;
+                    background: white;
+                    color: black;
+                    box-sizing: border-box;
+                }
+                .receipt {
+                    width: 100%;
+                    max-width: 100%;
+                    text-align: center;
+                    margin: 0 auto;
+                    font-weight: bold !important;
+                }
+                .left-align {
+                    text-align: left;
+                    font-weight: bold !important;
+                }
+                .bold {
+                    font-weight: bold !important;
+                }
+                .separator {
+                    border-top: 1px dashed #000;
+                    margin: 16px 0;
+                }
+                .total {
+                    font-size: ${fontSizes.total};
+                    font-weight: bold !important;
+                    margin: 20px 0;
+                }
+                .company-name {
+                    font-size: ${fontSizes.company};
+                    font-weight: bold !important;
+                    margin-bottom: 10px;
+                }
+                .company-info {
+                    font-size: ${fontSizes.base};
+                    font-weight: bold !important;
+                    margin-bottom: 6px;
+                }
+                .bill-details {
+                    font-size: ${fontSizes.base};
+                    font-weight: bold !important;
+                    margin: 6px 0;
+                }
+                .amount-line {
+                    font-size: ${fontSizes.base};
+                    font-weight: bold !important;
+                    margin: 8px 0;
+                }
+                .footer {
+                    font-size: 22px;
+                    font-weight: bold !important;
+                    margin-top: 16px;
+                }
                 @media print {
                     @page {
-                        /* Set paper size and remove all browser-added margins */
-                        size: 58mm auto;
-                        margin: 0; 
-                    }
-                    html, body {
-                        /* Force removal of margin and padding */
-                        margin: 0 !important;
+                        size: A4 !important;
+                        margin: 20mm !important;
                         padding: 0 !important;
                     }
+                    html {
+                        width: 100% !important;
+                        max-width: 100% !important;
                 }
-                body {
-                    font-family: 'Courier New', Courier, monospace;
-                    /* Set a width equal to the paper width */
-                    width: 58mm; 
-                    /* Include padding within the 58mm width to prevent overflow */
-                    box-sizing: border-box; 
-                    /* Add padding: 3mm top, 2mm sides, 3mm bottom */
-                    /* This controls the empty space around the content */
-                    padding: 3mm 2mm; 
-                    color: #000;
+                                    body {
+                        width: 100% !important;
+                        max-width: 100% !important;
+                        margin: 0 !important;
+                        padding: 4mm !important;
+                        -webkit-print-color-adjust: exact !important;
+                        color-adjust: exact !important;
+                        font-family: 'Arial', 'Helvetica', sans-serif !important;
+                        font-size: ${fontSizes.base} !important;
+                        font-weight: bold !important;
+                        line-height: 1.4 !important;
+                    }
+                .receipt {
+                        width: 100% !important;
+                        max-width: 100% !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        font-weight: bold !important;
+                    }
+                    * {
+                        -webkit-print-color-adjust: exact !important;
+                        color-adjust: exact !important;
+                        font-weight: bold !important;
+                    }
+                    /* Hide instructions during print */
+                    .print-instructions {
+                        display: none !important;
+                    }
                 }
-                .receipt { 
-                    width: 100%; 
+                @media screen {
+                    body {
+                        background: #f5f5f5;
+                        padding: 15px;
+                        display: flex;
+                        justify-content: center;
+                        align-items: flex-start;
+                        min-height: 100vh;
+                    }
+                    .receipt {
+                        background: white;
+                        padding: 15px;
+                        border: 1px solid #ddd;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                        max-width: 100%;
+                        width: 100%;
+                        margin: 0 auto;
+                        font-weight: bold;
+                    }
                 }
-                .header { 
-                    text-align: center; 
-                    font-size: 11px; /* Slightly smaller for better fit */
-                    font-weight: bold; 
-                    margin-bottom: 2mm; 
+                
+                /* Keep A4 layout but with 2x larger text sizes */
+                html, body {
+                    width: 100% !important;
+                    max-width: 100% !important;
                 }
-                .company { 
-                    text-align: center; 
-                    font-size: 9px; /* Smaller for sub-headings */
-                    margin-bottom: 3mm; 
-                    border-bottom: 1px dashed #000; 
-                    padding-bottom: 2mm; 
-                }
-                .info { 
-                    margin-bottom: 3mm; 
-                    font-size: 9px; /* Smaller for itemized list */
-                }
-                .info-row {
-                    /* Use grid for a stable two-column layout */
-                    display: grid;
-                    grid-template-columns: auto 1fr; /* Column 1 (label) is auto-sized, Column 2 (value) takes remaining space */
-                    gap: 3mm; /* Space between label and value */
-                    margin-bottom: 1.5mm;
-                }
-                .info-row span:last-child {
-                    text-align: right; /* Align the value to the right */
-                    word-break: break-word; /* Allow long text to wrap */
-                }
-                .amount { 
-                    font-size: 12px; 
-                    font-weight: bold; 
-                    margin: 3mm 0; 
-                    text-align: center; 
-                    border-top: 1px dashed #000; 
-                    border-bottom: 1px dashed #000; 
-                    padding: 2mm 0; 
-                }
-                .footer { 
-                    text-align: center; 
-                    font-size: 9px; 
-                    margin-top: 4mm; 
-                    border-top: 1px dashed #000; 
-                    padding-top: 2mm; 
+                
+                /* Standard A4 page sizing */
+                @page {
+                    size: A4 !important;
+                    margin: 20mm !important;
+                    padding: 0 !important;
                 }
             </style>
         </head>
         <body>
             <div class="receipt">
-                <div class="header">${COMPANY_INFO.name || 'Your Company'}</div>
-                <div class="company">
-                    <div>${COMPANY_INFO.address || 'Company Address'}</div>
-                    <div>Tel: ${COMPANY_INFO.phone || 'N/A'}</div>
-                </div>
-                <div class="info">
-                    <div class="info-row"><span>Date:</span><span>${record.displayDate}</span></div>
-                    <div class="info-row"><span>Bill No:</span><span>${record.id.substring(0, 8).toUpperCase()}</span></div>
-                    <div class="info-row"><span>Customer:</span><span>${record.customerName}</span></div>
-                    <div class="info-row"><span>Vehicle:</span><span>${record.vehicleNumber || 'N/A'}</span></div>
-                    <div class="info-row"><span>Product:</span><span>${record.productName || 'N/A'}</span></div>
-                    <div class="info-row"><span>Type:</span><span>${record.billType === 'cash' ? 'Cash' : 'Odhar'}</span></div>
-                    <div class="info-row"><span>Quantity:</span><span>${(record.quantity || 0).toLocaleString()}</span></div>
-                    <div class="info-row"><span>Rate:</span><span>RS ${(record.rate || 0).toLocaleString()}</span></div>
-                    ${record.billType === 'cash' ? `
-                    <div class="info-row"><span>Subtotal:</span><span>RS ${(record.originalAmount || 0).toLocaleString()}</span></div>
-                    <div class="info-row"><span>Discount:</span><span>RS ${(record.discount || 0).toLocaleString()}</span></div>
-                    ` : ''}
-                    <div class="amount">Total: RS ${(record.amount || 0).toLocaleString()}</div>
-                </div>
-                <div class="footer">
-                    <div>Thank you for your business!</div>
-                    <div style="margin-top: 4mm; font-size: 8px;">Generated on ${moment().format('YYYY-MM-DD HH:mm')}</div>
-                </div>
+                <div class="company-name">${companyName}</div>
+                <div class="company-info">${companyAddress}</div>
+                <div class="company-info">Tel: ${companyPhone}</div>
+                <div class="separator"></div>
+                <div class="left-align bill-details">Date: ${record.displayDate}</div>
+                <div class="left-align bill-details">Bill No: ${record.id.substring(0, 8).toUpperCase()}</div>
+                ${record.customerName ? `<div class="left-align bill-details">Customer: ${record.customerName}</div>` : ''}
+                ${record.vehicleNumber ? `<div class="left-align bill-details">Vehicle: ${record.vehicleNumber}</div>` : ''}
+                <div class="left-align bill-details">Product: ${record.productName || 'N/A'}</div>
+                <div class="left-align bill-details">Type: ${record.billType === 'cash' ? 'Cash' : 'Odhar'}</div>
+                <div class="separator"></div>
+                <div class="left-align amount-line">Quantity: ${(record.quantity || 0).toLocaleString()}</div>
+                <div class="left-align amount-line">Rate: RS ${(record.rate || 0).toLocaleString()}</div>
+                ${record.billType === 'cash' ? `
+                    <div class="left-align amount-line">Subtotal: RS ${(record.originalAmount || 0).toLocaleString()}</div>
+                    ${record.discount && record.discount > 0 ? `<div class="left-align amount-line">Discount: RS ${(record.discount || 0).toLocaleString()}</div>` : ''}
+                ` : ''}
+                <div class="separator"></div>
+                <div class="total">TOTAL: RS ${(record.amount || 0).toLocaleString()}</div>
+                <div class="separator"></div>
+                <div class="footer">Thank you for your business!</div>
+                <div class="footer">${TimezoneService.formatServerDate(null, 'YYYY-MM-DD HH:mm')}</div>
+                <br><br>
             </div>
         </body>
         </html>
-    `;
+        `;
 
-        const iframe = document.createElement('iframe');
-        iframe.style.position = 'absolute';
-        iframe.style.width = '0';
-        iframe.style.height = '0';
-        iframe.style.border = '0';
-        iframe.style.visibility = 'hidden';
-        document.body.appendChild(iframe);
-
-        const doc = iframe.contentWindow.document;
-        doc.open();
-        doc.write(printContent);
-        doc.close();
-
-        iframe.onload = function () {
-            setTimeout(() => {
-                iframe.contentWindow.focus();
-                iframe.contentWindow.print();
+        // Create a new window with the receipt
+        const printWindow = window.open('', '_blank', 'width=300,height=600');
+        
+        if (printWindow) {
+            printWindow.document.write(printHtml);
+            printWindow.document.close();
+            
+            // Focus the window
+            printWindow.focus();
+            
+            // Show simple print instructions (hidden during printing)
+            const instructions = `
+                <div class="print-instructions" style="padding: 20px; font-family: Arial, sans-serif;">
+                    <h3>Print Receipt</h3>
+                    <p>Click the Print button below to print your receipt on the thermal printer.</p>
+                    <div style="text-align: right;">
+                        <button onclick="window.print()" style="padding: 10px 20px; background: #52c41a; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 10px 5px;">Print Receipt</button>
+                        <button onclick="window.close()" style="padding: 10px 20px; background: #ff4d4f; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 10px 5px;">Close</button>
+                    </div>
+                </div>
+                <style>
+                    @media print {
+                        .print-instructions {
+                            display: none !important;
+                        }
+                    }
+                </style>
+            `;
+            
+            printWindow.document.body.insertAdjacentHTML('afterbegin', instructions);
+            
+            message.success('Receipt window opened. Click Print button to print on thermal printer.');
+            
+            // Clean up blob URL after a delay
                 setTimeout(() => {
-                    document.body.removeChild(iframe);
-                }, 500);
-            }, 200);
-        };
+                URL.revokeObjectURL(jsonUrl);
+            }, 5000);
+        } else {
+            message.error('Please allow popups for printing to work');
+        }
     };
 
     const calculateExportPreviewTotals = (data) => {
@@ -787,7 +1136,7 @@ function BillingPage() {
                 doc.setFontSize(8);
                 doc.setTextColor(150);
                 doc.text(`Page ${data.pageNumber} of ${pageCount}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
-                doc.text(`Generated on: ${moment().format('YYYY-MM-DD HH:mm')}`, margin, pageHeight - 10);
+                doc.text(`Generated on: ${TimezoneService.formatServerDate(null, 'YYYY-MM-DD HH:mm')}`, margin, pageHeight - 10);
             },
         });
 
@@ -828,7 +1177,7 @@ function BillingPage() {
             ['', '', '', '', '', '', 'NET TOTAL:', exportTotal.toLocaleString('en-PK', { minimumFractionDigits: 2 })]
         );
 
-        const fileName = `Billing-Report-${moment().format('YYYYMMDD-HHmm')}.pdf`;
+        const fileName = `Billing-Report-${TimezoneService.formatServerDate(null, 'YYYYMMDD-HHmm')}.pdf`;
 
         const enhancedCompanyInfo = {
             ...COMPANY_INFO,
@@ -848,12 +1197,12 @@ function BillingPage() {
             title: 'Shift', key: 'shift', width: '15%', render: (_, record) => {
                 const shift = shifts.find(s => s.id === record.shiftId);
                 if (shift) {
-                    const start = moment(shift.startTime.toDate()).format('MM-DD HH:mm');
-                    const end = shift.endTime ? moment(shift.endTime.toDate()).format('HH:mm') : 'Ongoing';
-                    return <Tooltip title={`${moment(shift.startTime.toDate()).format('YYYY-MM-DD HH:mm')} - ${shift.endTime ? moment(shift.endTime.toDate()).format('YYYY-MM-DD HH:mm') : 'Ongoing'}`}>{`${start} - ${end}`}</Tooltip>;
+                    const start = TimezoneService.formatServerDate(shift.startTime.toDate(), 'MM-DD HH:mm');
+                    const end = shift.endTime ? TimezoneService.formatServerDate(shift.endTime.toDate(), 'HH:mm') : 'Ongoing';
+                    return <Tooltip title={`${TimezoneService.formatServerDate(shift.startTime.toDate(), 'YYYY-MM-DD HH:mm')} - ${shift.endTime ? TimezoneService.formatServerDate(shift.endTime.toDate(), 'YYYY-MM-DD HH:mm') : 'Ongoing'}`}>{`${start} - ${end}`}</Tooltip>;
                 }
                 return 'N/A';
-            }, filters: shifts.slice(0, 10).map(shift => ({ text: `${moment(shift.startTime.toDate()).format('MM-DD HH:mm')} - ${shift.endTime ? moment(shift.endTime.toDate()).format('HH:mm') : 'Ongoing'}`, value: shift.id })), onFilter: (value, record) => record.shiftId === value,
+            }, filters: shifts.slice(0, 10).map(shift => ({ text: `${TimezoneService.formatServerDate(shift.startTime.toDate(), 'MM-DD HH:mm')} - ${shift.endTime ? TimezoneService.formatServerDate(shift.endTime.toDate(), 'HH:mm') : 'Ongoing'}`, value: shift.id })), onFilter: (value, record) => record.shiftId === value,
         },
         { title: 'Customer', dataIndex: 'customerName', key: 'customerName', width: '15%', sorter: (a, b) => (a.customerName || '').localeCompare(b.customerName || '') },
         { title: 'Type', dataIndex: 'billType', key: 'billType', width: '8%', render: (type) => <Tag color={type === 'cash' ? 'green' : 'blue'}>{type === 'cash' ? 'Cash' : 'Odhar'}</Tag> },

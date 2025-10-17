@@ -814,22 +814,6 @@ ${COMPANY_PHONE}
             </Row>
 
             <Divider />
-            <Card title="Global Totals" style={{ marginBottom: 20 }}>
-                <Row gutter={[16, 16]}>
-                    <Col>
-                        <Statistic title="Total Wasooli" value={globalTotals.totalWasooli} precision={2} />
-                    </Col>
-                    <Col>
-                        <Statistic title="Total Odhar" value={globalTotals.totalOdhar} precision={2} />
-                    </Col>
-                    <Col>
-                        <Statistic title="Total Salaries" value={globalTotals.totalSalaries} precision={2} />
-                    </Col>
-                    <Col>
-                        <Statistic title="Total Expenses" value={globalTotals.totalExpenses} precision={2} />
-                    </Col>
-                </Row>
-            </Card>
 
             {accountData.accountType === 'customer' && (
                 <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>

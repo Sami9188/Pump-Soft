@@ -25,6 +25,7 @@ const Dashboard = () => {
     const [readings, setReadings] = useState([]);
     const [purchases, setPurchases] = useState([]);
     const [adjustments, setAdjustments] = useState([]);
+    const [dipCharts, setDipCharts] = useState([]); // New state for historical dipcharts
     const [latestDipCharts, setLatestDipCharts] = useState({});
     const [loading, setLoading] = useState(false);
     const [selectedDateRange, setSelectedDateRange] = useState({
@@ -36,6 +37,7 @@ const Dashboard = () => {
     // State for chart data
     const [dailySalesData, setDailySalesData] = useState([]);
     const [dailyVolumeData, setDailyVolumeData] = useState([]); // New state for volume chart
+    const [dailyGainLossData, setDailyGainLossData] = useState([]); // New state for gain/loss chart
     const [productSalesData, setProductSalesData] = useState([]);
 
 
@@ -85,6 +87,23 @@ const Dashboard = () => {
             const processedDailyVolumeData = Object.keys(volumeByDay).map(date => ({ date, volume: volumeByDay[date] })).sort((a, b) => moment(a.date).diff(moment(b.date)));
             setDailyVolumeData(processedDailyVolumeData);
 
+            // Process data for daily gain/loss line chart
+            if (dipCharts.length > 0 && tanks.length > 0) {
+                const gainLossByDay = dipCharts.reduce((acc, dipChart) => {
+                    const date = moment(dipChart.recordedAt.toDate()).format('YYYY-MM-DD');
+                    const tank = tanks.find(t => t.id === dipChart.tankId);
+                    if (tank) {
+                        const gainLoss = (dipChart.dipLiters || 0) - (tank.remainingStock || 0);
+                        acc[date] = (acc[date] || 0) + gainLoss;
+                    }
+                    return acc;
+                }, {});
+                const processedGainLossData = Object.keys(gainLossByDay).map(date => ({ 
+                    date, 
+                    gainLoss: gainLossByDay[date] 
+                })).sort((a, b) => moment(a.date).diff(moment(b.date)));
+                setDailyGainLossData(processedGainLossData);
+            }
 
             // Process data for product sales pie chart
             if (products.length > 0) {
@@ -102,9 +121,10 @@ const Dashboard = () => {
         } else {
             setDailySalesData([]);
             setDailyVolumeData([]);
+            setDailyGainLossData([]);
             setProductSalesData([]);
         }
-    }, [readings, products]);
+    }, [readings, products, dipCharts, tanks]);
 
 
     const fetchDashboardData = async () => {
@@ -136,6 +156,11 @@ const Dashboard = () => {
             const adjustmentQuery = query(collection(db, 'adjustments'), where('date', '>=', startDate), where('date', '<=', endDate));
             const adjustmentSnapshot = await getDocs(adjustmentQuery);
             setAdjustments(adjustmentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+
+            // Fetch historical dipcharts data within date range for gain/loss chart
+            const dipChartsQuery = query(collection(db, 'dipcharts'), where('recordedAt', '>=', startDate), where('recordedAt', '<=', endDate), orderBy('recordedAt', 'desc'));
+            const dipChartsSnapshot = await getDocs(dipChartsQuery);
+            setDipCharts(dipChartsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
 
             let readingsQuery;
             const baseReadingsQuery = [where('timestamp', '>=', startDate), where('timestamp', '<=', endDate)];
@@ -267,6 +292,38 @@ const Dashboard = () => {
                                     <Line type="monotone" dataKey="volume" name="Volume (L)" stroke="#82ca9d" strokeWidth={2} activeDot={{ r: 8 }} />
                                 </LineChart>
                             ) : (<div style={{ textAlign: 'center', color: '#aaa', height: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No volume data for the selected period.</div>)}
+                        </ResponsiveContainer>
+                    </Card>
+                </Col>
+            </Row>
+
+            {/* Daily Gain/Loss Chart Section */}
+            <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                <Col xs={24}>
+                    <Card title="Daily Gain/Loss Trend (Liters)" hoverable>
+                        <ResponsiveContainer width="100%" height={300}>
+                            {dailyGainLossData.length > 0 ? (
+                                <LineChart data={dailyGainLossData}>
+                                    <CartesianGrid strokeDasharray="3 3" />
+                                    <XAxis dataKey="date" tickFormatter={(tick) => moment(tick).format('MMM DD')} />
+                                    <YAxis tickFormatter={(tick) => `${tick.toFixed(2)} L`} />
+                                    <Tooltip formatter={(value) => [`${Number(value).toFixed(2)} L`, value >= 0 ? 'Gain' : 'Loss']} />
+                                    <Legend />
+                                    <Line 
+                                        type="monotone" 
+                                        dataKey="gainLoss" 
+                                        name="Gain/Loss (L)" 
+                                        stroke="#ff7300" 
+                                        strokeWidth={2} 
+                                        activeDot={{ r: 8 }} 
+                                        dot={(props) => {
+                                            const { cx, cy, payload } = props;
+                                            const color = payload.gainLoss >= 0 ? '#52c41a' : '#ff4d4f';
+                                            return <circle cx={cx} cy={cy} r={3} fill={color} />;
+                                        }}
+                                    />
+                                </LineChart>
+                            ) : (<div style={{ textAlign: 'center', color: '#aaa', height: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No gain/loss data for the selected period.</div>)}
                         </ResponsiveContainer>
                     </Card>
                 </Col>

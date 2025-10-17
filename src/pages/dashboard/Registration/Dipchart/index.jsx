@@ -5,10 +5,10 @@ import {
 } from 'antd';
 import moment from 'moment';
 import {
-    PlusOutlined, EditOutlined, DeleteOutlined,
+    PlusOutlined, DeleteOutlined,
     FileExcelOutlined, FilePdfOutlined, LoadingOutlined, EyeOutlined
 } from '@ant-design/icons';
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp, orderBy, where, query } from 'firebase/firestore';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp, orderBy, where, query, getDoc } from 'firebase/firestore';
 import { exportToExcel } from '../../../../services/exportService';
 import { useAuth } from '../../../../context/AuthContext';
 import { db } from '../../../../config/firebase';
@@ -198,6 +198,26 @@ const DipChartManagement = () => {
                 return;
             }
 
+            // Fetch the tank's current remainingStock to use as bookStock for gain/loss calculation
+            let bookStock = null;
+            if (!editingId) { // Only fetch bookStock for new entries, not updates
+                try {
+                    const tankRef = doc(db, "tanks", values.tankId);
+                    const tankSnap = await getDoc(tankRef);
+                    if (tankSnap.exists()) {
+                        bookStock = tankSnap.data().remainingStock ?? null;
+                        
+                        // Note: For historical entries, this uses current tank stock as bookStock.
+                        // For more accurate historical data, you might want to implement 
+                        // a system that tracks stock at specific points in time.
+                        console.log(`Using current tank stock (${bookStock}L) as bookStock for historical dip entry`);
+                    }
+                } catch (error) {
+                    console.warn("Could not fetch tank stock for bookStock:", error);
+                    // Continue without bookStock - gain/loss will show as "-"
+                }
+            }
+
             if (editingId) {
                 await updateDoc(doc(db, "dipcharts", editingId), {
                     ...values,
@@ -207,13 +227,31 @@ const DipChartManagement = () => {
                 });
                 message.success("Dip chart updated successfully");
             } else {
+                // For new dip chart entries, also update the tank's remainingStock
                 await addDoc(collection(db, "dipcharts"), {
                     ...values,
+                    bookStock, // Add bookStock for gain/loss calculation
                     recordedAt: newRecordedAt,
                     shiftId: selectedShift.id,
-                    updatedAt: timestamp
+                    updatedAt: timestamp,
+                    createdBy: currentUser.uid
                 });
-                message.success("Dip chart created successfully");
+
+                // Update the tank's remainingStock to the newly measured volume
+                if (values.dipLiters !== null && values.dipLiters !== undefined) {
+                    try {
+                        await updateDoc(doc(db, "tanks", values.tankId), {
+                            remainingStock: values.dipLiters,
+                            lastUpdated: timestamp,
+                        });
+                        console.log(`Tank stock updated from ${bookStock}L to ${values.dipLiters}L`);
+                    } catch (error) {
+                        console.warn("Could not update tank stock:", error);
+                        // Don't fail the entire operation if tank update fails
+                    }
+                }
+
+                message.success("Dip chart created and tank stock updated successfully");
             }
 
             setIsModalVisible(false);
@@ -228,8 +266,30 @@ const DipChartManagement = () => {
     const handleDelete = async (id) => {
         setButtonLoading(true);
         try {
+            // First, get the dip chart data to know what to revert
+            const dipChartToDelete = dipCharts.find(chart => chart.id === id);
+            
+            if (dipChartToDelete) {
+                const { tankId, bookStock } = dipChartToDelete;
+                
+                // Revert the tank's remainingStock back to the bookStock value (if available)
+                if (bookStock !== null && bookStock !== undefined && tankId) {
+                    try {
+                        await updateDoc(doc(db, "tanks", tankId), {
+                            remainingStock: bookStock,
+                            lastUpdated: Timestamp.fromDate(new Date()),
+                        });
+                        console.log(`Tank stock reverted from current to ${bookStock}L`);
+                    } catch (error) {
+                        console.warn("Could not revert tank stock:", error);
+                        // Don't fail the entire operation if tank update fails
+                    }
+                }
+            }
+            
+            // Delete the dip chart record
             await deleteDoc(doc(db, "dipcharts", id));
-            message.success("Dip chart deleted successfully");
+            message.success("Dip chart deleted and tank stock reverted successfully");
             fetchDipCharts();
         } catch (error) {
             message.error("Delete failed: " + error.message);
@@ -361,16 +421,6 @@ const DipChartManagement = () => {
             key: 'actions',
             render: (_, record) => (
                 <Space size="small">
-                    <Tooltip title="Edit">
-                        <Button
-                            type="default"
-                            icon={<EditOutlined />}
-                            onClick={() => showModal(record)}
-                            size="small"
-                            loading={buttonLoading}
-                            disabled={buttonLoading}
-                        />
-                    </Tooltip>
                     <Tooltip title="Delete">
                         <Popconfirm
                             title="Are you sure you want to delete this dip chart entry?"

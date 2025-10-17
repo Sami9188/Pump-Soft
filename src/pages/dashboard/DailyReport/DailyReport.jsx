@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Table, Button, Typography, Select, Space, Row, Col, Statistic, Divider, message, Spin, Modal, Form, InputNumber, Input, Popconfirm, } from "antd";
-import { FilePdfOutlined, EditOutlined, DeleteOutlined, } from "@ant-design/icons";
+import { FilePdfOutlined, DeleteOutlined, EditOutlined, } from "@ant-design/icons";
 import moment from "moment";
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, Timestamp, getDoc, runTransaction, query, where, orderBy, limit, startAfter, writeBatch, serverTimestamp, onSnapshot, } from "firebase/firestore";
 import { db } from "../../../config/firebase";
@@ -8,6 +8,7 @@ import exportReportToPDF from "../../../services/exportService";
 import { useSettings } from "../../../context/SettingsContext";
 import { useFirebaseData } from "../../../context/FirebaseDataContext";
 import { useAuth } from "../../../context/AuthContext";
+import TimezoneService from "../../../services/timezoneService";
 
 const { Title: TitleTypography } = Typography;
 const { Option } = Select;
@@ -21,6 +22,16 @@ const SalesReportPage = () => {
     const { settings } = useSettings();
     const { user } = useAuth();
     const { overallTotalsofOdharAndWasooli } = useFirebaseData();
+
+    // Early return if user is not loaded yet or contexts are not ready
+    if (!user || !settings) {
+        return (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
+                <Spin size="large" tip="Loading..." />
+            </div>
+        );
+    }
+
     const [loading, setLoading] = useState(false);
     const [exportLoading, setExportLoading] = useState(false);
     const [reportData, setReportData] = useState({
@@ -100,19 +111,32 @@ const SalesReportPage = () => {
     const isAdmin = user?.role?.includes("admin") || false;
 
     useEffect(() => {
-        fetchAllData();
-        fetchShifts(3);
+        try {
+            fetchAllData();
+            fetchShifts(3);
+        } catch (error) {
+            console.error("Error in initial data fetch:", error);
+            message.error("Failed to load initial data: " + error.message);
+        }
     }, []);
 
     useEffect(() => {
-        if (selectedShift) {
-            generateReport();
+        try {
+            if (selectedShift) {
+                generateReport();
+            }
+        } catch (error) {
+            console.error("Error generating report:", error);
+            message.error("Failed to generate report: " + error.message);
         }
     }, [selectedShift, products, tanks, readings, nozzles, adjustments, salesInvoices, salesReturnInvoices, purchaseInvoices]);
 
     // ** START: Centralized function for creating a new shift **
     const startNewShift = async () => {
         try {
+            if (!user?.uid) {
+                throw new Error("User not authenticated");
+            }
             const newShiftData = {
                 startTime: Timestamp.now(),
                 status: "active",
@@ -175,11 +199,199 @@ const SalesReportPage = () => {
     const handleEndShift = async () => {
         if (!currentShift) return;
         try {
+            console.log("🔍 Starting shift end process for shift:", currentShift.id);
+            
+            // Create a batch for all operations
+            const batch = writeBatch(db);
+            
             // End the current shift
-            await updateDoc(doc(db, "shifts", currentShift.id), {
+            batch.update(doc(db, "shifts", currentShift.id), {
                 endTime: Timestamp.now(),
                 status: "ended",
             });
+
+            // 1. TRANSFER NOZZLE READINGS TO CASHFLOW
+            const shiftReadings = readings.filter(reading => reading.shiftId === currentShift.id);
+            console.log("🔍 Found", shiftReadings.length, "nozzle readings to transfer");
+            
+            for (const reading of shiftReadings) {
+                if (reading.totalSales && reading.totalSales > 0) {
+                    const nozzle = nozzles.find(n => n.id === reading.nozzleId);
+                    const tank = tanks.find(t => t.id === reading.tankId);
+                    
+                        const cashflowRef = doc(collection(db, 'cashflow'));
+                        const cashflowData = {
+                        amount: reading.totalSales,
+                        type: 'cashIn',
+                        date: reading.timestamp || Timestamp.now(),
+                        referenceId: reading.id,
+                            shiftId: currentShift.id,
+                        cashflowCategory: 'Nozzle Sales',
+                        description: `Nozzle ${nozzle?.nozzleName || reading.nozzleId} - ${tank?.tankName || 'Unknown Tank'} (${reading.totalVolume?.toFixed(2) || 0} L)`,
+                        source: 'nozzle_reading_transfer',
+                            createdAt: serverTimestamp(),
+                            updatedAt: serverTimestamp(),
+                        };
+                        batch.set(cashflowRef, cashflowData);
+                    console.log("🔍 Added nozzle reading to cashflow:", cashflowData.description);
+                }
+            }
+
+            // 2. TRANSFER SALES INVOICES TO CASHFLOW
+            const shiftSalesInvoices = salesInvoices.filter(invoice => invoice.shiftId === currentShift.id);
+            console.log("🔍 Found", shiftSalesInvoices.length, "sales invoices to transfer");
+            
+            for (const invoice of shiftSalesInvoices) {
+                if (invoice.amount && invoice.amount > 0) {
+                    const product = products.find(p => p.id === invoice.productId);
+                    
+                    const cashflowRef = doc(collection(db, 'cashflow'));
+                    const cashflowData = {
+                        amount: invoice.amount,
+                        type: 'cashIn',
+                        date: invoice.date,
+                        referenceId: invoice.id,
+                        shiftId: currentShift.id,
+                        cashflowCategory: 'Sales Invoice',
+                        description: `Sales: ${product?.productName || 'Unknown Product'} (${invoice.quantity} x ${invoice.unitPrice})`,
+                        source: 'sales_invoice_transfer',
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    };
+                    batch.set(cashflowRef, cashflowData);
+                    console.log("🔍 Added sales invoice to cashflow:", cashflowData.description);
+                }
+            }
+
+            // 3. TRANSFER PURCHASE INVOICES TO CASHFLOW
+            const shiftPurchaseInvoices = purchaseInvoices.filter(invoice => invoice.shiftId === currentShift.id);
+            console.log("🔍 Found", shiftPurchaseInvoices.length, "purchase invoices to transfer");
+            
+            for (const invoice of shiftPurchaseInvoices) {
+                if (invoice.amount && invoice.amount > 0) {
+                    const product = products.find(p => p.id === invoice.productId);
+                    const supplier = suppliers.find(s => s.id === invoice.supplierId);
+                    
+                    const cashflowRef = doc(collection(db, 'cashflow'));
+                    const cashflowData = {
+                        amount: invoice.amount,
+                        type: 'cashOut',
+                        date: invoice.date,
+                        referenceId: invoice.id,
+                        shiftId: currentShift.id,
+                        cashflowCategory: 'Purchase Invoice',
+                        description: `Purchase: ${product?.productName || 'Unknown Product'} from ${supplier?.accountName || 'Unknown Supplier'} (${invoice.quantity} x ${invoice.unitPrice})`,
+                        source: 'purchase_invoice_transfer',
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    };
+                    batch.set(cashflowRef, cashflowData);
+                    console.log("🔍 Added purchase invoice to cashflow:", cashflowData.description);
+                }
+            }
+
+            // 4. TRANSFER ADJUSTMENT ENTRIES TO CASHFLOW
+            const shiftAdjustments = adjustments.filter(adj => adj.shiftId === currentShift.id);
+            console.log("🔍 Found", shiftAdjustments.length, "adjustment entries to transfer");
+            
+            for (const adjustment of shiftAdjustments) {
+                const adjustmentDate = adjustment.date || Timestamp.now();
+                
+                // Transfer each adjustment field to cashflow if it has a value > 0
+                const adjustmentFields = [
+                    { field: 'wasooli', type: 'cashIn', category: 'Wasooli (Adjustment)', description: 'Manual Cash In' },
+                    { field: 'odhar', type: 'cashOut', category: 'Odhar (Adjustment)', description: 'Manual Cash Out' },
+                    { field: 'karaya', type: 'cashOut', category: 'Karaya', description: 'Freight/Transport Charges' },
+                    { field: 'salary', type: 'cashOut', category: 'Salary', description: 'Salary Payment' },
+                    { field: 'expenses', type: 'cashOut', category: 'Expenses', description: 'General Expenses' }
+                ];
+
+                for (const { field, type, category, description } of adjustmentFields) {
+                    const amount = adjustment[field] || 0;
+                    if (amount > 0) {
+                        const cashflowRef = doc(collection(db, 'cashflow'));
+                        const cashflowData = {
+                            amount: amount,
+                            type: type,
+                            date: adjustmentDate,
+                            referenceId: adjustment.id,
+                            shiftId: currentShift.id,
+                            cashflowCategory: category,
+                            description: `${description}: Rs ${amount.toLocaleString()}`,
+                            source: 'adjustment_transfer',
+                            createdAt: serverTimestamp(),
+                            updatedAt: serverTimestamp(),
+                        };
+                        batch.set(cashflowRef, cashflowData);
+                        console.log("🔍 Added adjustment to cashflow:", cashflowData.description);
+                    }
+                }
+            }
+
+            // 5. TRANSFER DISCOUNTS TO CASHFLOW
+            // Filter out discounts that are linked to bills (they will be processed via bill discounts)
+            const shiftDiscounts = discounts.filter(discount =>
+                discount.shiftId === currentShift.id &&
+                !discount.billId // Only process discounts not linked to bills
+            );
+            console.log("🔍 Found", shiftDiscounts.length, "standalone discounts to transfer");
+
+            for (const discount of shiftDiscounts) {
+                if (discount.amount && discount.amount > 0) {
+                    const cashflowRef = doc(collection(db, 'cashflow'));
+                    const cashflowData = {
+                        amount: discount.amount,
+                        type: 'cashOut',
+                        date: discount.createdAt || Timestamp.now(),
+                        referenceId: discount.id,
+                        shiftId: currentShift.id,
+                        cashflowCategory: 'Discount',
+                        description: `Discount: Rs ${discount.amount.toLocaleString()}`,
+                        source: 'discount_transfer',
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    };
+                    batch.set(cashflowRef, cashflowData);
+                    console.log("🔍 Added standalone discount to cashflow:", cashflowData.description);
+                }
+            }
+
+            // Also handle discounts from cash bills
+            // Fetch bills for the current shift
+            const billsQuery = query(collection(db, 'bills'), where('shiftId', '==', currentShift.id));
+            const billsSnapshot = await getDocs(billsQuery);
+            const shiftBills = billsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+            const shiftCashBillsWithDiscounts = shiftBills.filter(bill =>
+                bill.billType === 'cash' &&
+                bill.discount > 0
+            );
+            console.log("🔍 Found", shiftCashBillsWithDiscounts.length, "cash bills with discounts to transfer");
+
+            for (const bill of shiftCashBillsWithDiscounts) {
+                if (bill.discount && bill.discount > 0) {
+                    const cashflowRef = doc(collection(db, 'cashflow'));
+                    const cashflowData = {
+                        amount: bill.discount,
+                        type: 'cashOut',
+                        date: bill.date || Timestamp.now(),
+                        referenceId: bill.id,
+                        shiftId: currentShift.id,
+                        cashflowCategory: 'Discount',
+                        description: `Bill Discount: Rs ${bill.discount.toLocaleString()} (Bill ID: ${bill.id.substring(0, 8)})`,
+                        source: 'bill_discount_transfer',
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    };
+                    batch.set(cashflowRef, cashflowData);
+                    console.log("🔍 Added bill discount to cashflow:", cashflowData.description);
+                }
+            }
+
+            // Commit all operations
+            await batch.commit();
+            console.log("🔍 Batch committed successfully");
+
             setShifts(prev =>
                 prev.map(shift =>
                     shift.id === currentShift.id
@@ -204,28 +416,67 @@ const SalesReportPage = () => {
                     expenses: 0, wasooli: 0, odhar: 0,
                 },
             });
-            message.success("Shift ended and new shift started successfully.");
+
+            // Calculate totals for the new data being transferred
+            const nozzleReadingsTotal = shiftReadings.reduce((total, reading) => total + (reading.totalSales || 0), 0);
+            const salesInvoicesTotal = shiftSalesInvoices.reduce((total, invoice) => total + (invoice.amount || 0), 0);
+            const purchaseInvoicesTotal = shiftPurchaseInvoices.reduce((total, invoice) => total + (invoice.amount || 0), 0);
+
+            // Calculate adjustment totals (excluding advanceCash and bankPayment)
+            const adjustmentsTotal = shiftAdjustments.reduce((total, adj) => {
+                return total + (adj.wasooli || 0) + (adj.odhar || 0) +
+                       (adj.karaya || 0) + (adj.salary || 0) + (adj.expenses || 0);
+            }, 0);
+
+            // Calculate discount totals
+            const discountTotal = shiftDiscounts.reduce((total, discount) => total + (discount.amount || 0), 0) +
+                                 shiftCashBillsWithDiscounts.reduce((total, bill) => total + (bill.discount || 0), 0);
+
+            const totalDiscountItems = shiftDiscounts.length + shiftCashBillsWithDiscounts.length;
+
+            const totalCashIn = nozzleReadingsTotal + salesInvoicesTotal + shiftAdjustments.reduce((total, adj) => total + (adj.wasooli || 0), 0);
+            const totalCashOut = purchaseInvoicesTotal + shiftAdjustments.reduce((total, adj) =>
+                total + (adj.odhar || 0) + (adj.karaya || 0) + (adj.salary || 0) + (adj.expenses || 0), 0) + discountTotal;
+            const netCashFlow = totalCashIn - totalCashOut;
+
+            console.log("🔍 Transfer summary:", {
+                nozzleReadings: shiftReadings.length,
+                nozzleReadingsTotal: nozzleReadingsTotal,
+                salesInvoices: shiftSalesInvoices.length,
+                salesInvoicesTotal: salesInvoicesTotal,
+                purchaseInvoices: shiftPurchaseInvoices.length,
+                purchaseInvoicesTotal: purchaseInvoicesTotal,
+                adjustments: shiftAdjustments.length,
+                adjustmentsTotal: adjustmentsTotal,
+                standaloneDiscounts: shiftDiscounts.length,
+                billDiscounts: shiftCashBillsWithDiscounts.length,
+                totalDiscounts: totalDiscountItems,
+                discountTotal: discountTotal,
+                totalCashIn: totalCashIn,
+                totalCashOut: totalCashOut,
+                netCashFlow: netCashFlow
+            });
+
+            message.success(
+                `Shift ended successfully! Data transferred to cashflow: ${shiftReadings.length} nozzle readings (Rs ${nozzleReadingsTotal.toLocaleString()}), ${shiftSalesInvoices.length} sales invoices (Rs ${salesInvoicesTotal.toLocaleString()}), ${shiftPurchaseInvoices.length} purchase invoices (Rs ${purchaseInvoicesTotal.toLocaleString()}), ${shiftAdjustments.length} adjustment entries (Rs ${adjustmentsTotal.toLocaleString()}), ${totalDiscountItems} discounts (Rs ${discountTotal.toLocaleString()}). Net cash flow: Rs ${netCashFlow.toLocaleString()}.`
+            );
         } catch (err) {
+            console.error("❌ Failed to end shift:", err);
+            console.error("❌ Error details:", {
+                message: err.message,
+                stack: err.stack,
+                currentShift: currentShift?.id,
+                readingsCount: readings.filter(r => r.shiftId === currentShift?.id).length,
+                salesInvoicesCount: salesInvoices.filter(i => i.shiftId === currentShift?.id).length,
+                purchaseInvoicesCount: purchaseInvoices.filter(i => i.shiftId === currentShift?.id).length,
+                adjustmentsCount: adjustments.filter(a => a.shiftId === currentShift?.id).length
+            });
             message.error("Failed to end shift: " + err.message);
         }
     };
 
 
-    const createCashflowEntry = async (batch, amount, type, date, referenceId, shiftId, category) => {
-        const cashflowRef = doc(collection(db, 'cashflow'));
-        const cashflowData = {
-            amount,
-            type, // 'cashIn' or 'cashOut'
-            date,
-            referenceId,
-            shiftId,
-            cashflowCategory: category, // ✅ NEW FIELD
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-        };
-        batch.set(cashflowRef, cashflowData);
-        return cashflowRef.id;
-    };
+    // createCashflowEntry function removed - cashflow entries are now only created when shift ends
 
 
     const fetchAllData = async () => {
@@ -265,10 +516,27 @@ const SalesReportPage = () => {
             setCustomers(accounts.filter((a) => a.accountType === "customer"));
             setSuppliers(accounts.filter((a) => a.accountType === "supplier"));
 
-            setSalesInvoices(salesInvData.docs.map((d) => ({ id: d.id, ...d.data() })));
-            setSalesReturnInvoices(salesRetInvData.docs.map((d) => ({ id: d.id, ...d.data() })));
-            setPurchaseInvoices(purchaseInvData.docs.map((d) => ({ id: d.id, ...d.data() })));
-            setAdjustments(adjustmentsData.docs.map((d) => ({ id: d.id, ...d.data() })));
+            const salesInvoicesData = salesInvData.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const salesReturnInvoicesData = salesRetInvData.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const purchaseInvoicesData = purchaseInvData.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const adjustmentsDataMapped = adjustmentsData.docs.map((d) => ({ id: d.id, ...d.data() }));
+            
+            console.log("🔍 Fetched data:", {
+                salesInvoices: salesInvoicesData.length,
+                salesReturnInvoices: salesReturnInvoicesData.length,
+                purchaseInvoices: purchaseInvoicesData.length,
+                adjustments: adjustmentsDataMapped.length,
+                sampleSalesInvoice: salesInvoicesData[0] ? { 
+                    id: salesInvoicesData[0].id, 
+                    shiftId: salesInvoicesData[0].shiftId, 
+                    productName: salesInvoicesData[0].productName 
+                } : null
+            });
+            
+            setSalesInvoices(salesInvoicesData);
+            setSalesReturnInvoices(salesReturnInvoicesData);
+            setPurchaseInvoices(purchaseInvoicesData);
+            setAdjustments(adjustmentsDataMapped);
         } catch (err) {
             message.error("Failed to fetch data: " + err.message);
         } finally {
@@ -277,14 +545,35 @@ const SalesReportPage = () => {
     };
 
     const parseInvoiceDate = (date) => {
-        if (date instanceof Date) return date;
-        if (date?.toDate) return date.toDate();
-        return moment(date).toDate();
+        if (date instanceof Date) return TimezoneService.createServerDate(date);
+        if (date?.toDate) return TimezoneService.createServerDate(date.toDate());
+        return TimezoneService.createServerDate(date);
     };
 
     const filterDataByShift = (data) => {
-        if (!selectedShift || !selectedShift.id) return [];
-        return data.filter(item => item.shiftId === selectedShift.id);
+        // If no selectedShift, show data from currentShift (active shift)
+        const targetShiftId = selectedShift?.id || currentShift?.id;
+        console.log("🔍 filterDataByShift called:", {
+            dataLength: data.length,
+            selectedShiftId: selectedShift?.id,
+            currentShiftId: currentShift?.id,
+            targetShiftId: targetShiftId,
+            sampleData: data.slice(0, 3).map(item => ({ id: item.id, shiftId: item.shiftId, productName: item.productName }))
+        });
+        
+        if (!targetShiftId) {
+            console.log("🔍 No target shift ID, returning empty array");
+            return [];
+        }
+        
+        const filtered = data.filter(item => item.shiftId === targetShiftId);
+        console.log("🔍 Filtered data:", {
+            targetShiftId,
+            filteredCount: filtered.length,
+            filteredIds: filtered.map(item => item.id)
+        });
+        
+        return filtered;
     };
 
     useEffect(() => {
@@ -398,11 +687,12 @@ const SalesReportPage = () => {
             const filteredReadings = filterDataByShift(readings);
             const filteredSales = filterDataByShift(salesInvoices)
                 .filter(invoice => invoice.source !== 'singlePage');
-            const filteredSalesReturn = filterDataByShift(salesReturnInvoices).filter((invoice) => {
-                console.log('invoice :>> ', invoice);
-                return invoice.purchaseType === "fuel"
-            }
-            );
+            // Debug: Check all sales return invoices before filtering
+            console.log('=== ALL SALES RETURN INVOICES ===');
+            console.log('salesReturnInvoices (all):', salesReturnInvoices);
+            console.log('After filterDataByShift:', filterDataByShift(salesReturnInvoices));
+            
+            const filteredSalesReturn = filterDataByShift(salesReturnInvoices); // Include ALL sales return invoices
             const filteredPurchase = filterDataByShift(purchaseInvoices);
             const filteredAdjustments = filterDataByShift(adjustments);
             const filteredDip = filterDataByShift(dipChartData);
@@ -430,8 +720,23 @@ const SalesReportPage = () => {
                     });
                 }
             });
-            const readingsByCategory = Object.values(byCategory).map(group => {
-                const sortedRecords = group.records.sort((a, b) => b.timestamp.toDate() - a.timestamp.toDate());
+            const readingsByCategory = Object.values(byCategory)
+                .sort((a, b) => {
+                    // Always show Diesel before Petrol regardless of recording order
+                    if (a.categoryId === 'diesel') return -1;
+                    if (b.categoryId === 'diesel') return 1;
+                    return 0;
+                })
+                .map(group => {
+                const sortedRecords = group.records.sort((a, b) => {
+                    const dateA = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(0);
+                    const dateB = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(0);
+                    if (dateA.getTime() !== dateB.getTime()) {
+                        return dateA - dateB;
+                    }
+                    // As a fallback for identical timestamps, sort by key (document ID)
+                    return a.key.localeCompare(b.key);
+                });
                 return {
                     categoryId: group.categoryId,
                     categoryName: group.categoryName,
@@ -452,10 +757,18 @@ const SalesReportPage = () => {
                     (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
                     0
                 );
-            const salesReturnInvoicesTotal = filteredSalesReturn.reduce(
-                (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
-                0
-            );
+            const salesReturnInvoicesTotal = filteredSalesReturn
+                .filter(item => item.source !== 'singlePage') // Exclude items with source 'singlePage'
+                .reduce(
+                    (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
+                    0
+                );
+
+            // Debug: Log sales return calculation
+            console.log('=== SALES RETURN DEBUG ===');
+            console.log('filteredSalesReturn:', filteredSalesReturn);
+            console.log('filteredSalesReturn after filter:', filteredSalesReturn.filter(item => item.source !== 'singlePage'));
+            console.log('salesReturnInvoicesTotal:', salesReturnInvoicesTotal);
             const purchaseInvoicesTotal = filteredPurchase
                 .filter(i => i.purchaseType !== "fuel") // <-- This line keeps only fuel purchases
                 .reduce(
@@ -506,6 +819,13 @@ const SalesReportPage = () => {
 
             // 3. Calculate the final grand total (Net Cash for the shift)
             const grandTotal = totalCashIn - totalCashOut;
+
+            // Debug: Log grand total calculation
+            console.log('=== GRAND TOTAL DEBUG ===');
+            console.log('totalCashIn:', totalCashIn);
+            console.log('totalCashOut:', totalCashOut);
+            console.log('salesReturnInvoicesTotal in totalCashOut:', salesReturnInvoicesTotal);
+            console.log('grandTotal:', grandTotal);
 
             setReportData({
                 readingsByCategory,
@@ -573,16 +893,14 @@ const SalesReportPage = () => {
 
     const handleEditSalesInvoice = (rec) => {
         setEditingSalesInvoice(rec);
-        const isFuel = !!rec.tankId;
         const recDate = parseInvoiceDate(rec.date);
         salesInvoiceForm.setFieldsValue({
-            type: isFuel ? "fuel" : "non-fuel",
-            date: moment(recDate).format("YYYY-MM-DD"),
-            time: moment(recDate).format("HH:mm"),
+            type: "non-fuel", // Always non-fuel for sales invoices
+            date: TimezoneService.formatServerDate(recDate, "YYYY-MM-DD"),
+            time: TimezoneService.formatServerDate(recDate, "HH:mm"),
             productId: rec.productId,
             quantity: rec.quantity,
             unitPrice: rec.unitPrice,
-            tankId: rec.tankId,
         });
         setSalesTotal(rec.quantity * rec.unitPrice);
         setIsSalesInvoiceModalOpen(true);
@@ -607,9 +925,7 @@ const SalesReportPage = () => {
                 newRemaining = await updateProductremainingStockAfter(rec.productId, +rec.quantity);
             }
 
-            if (rec.cashflowId) {
-                batch.delete(doc(db, "cashflow", rec.cashflowId));
-            }
+            // No need to delete cashflow entries - they are only created when shift ends
             batch.delete(doc(db, "saleInvoices", id));
 
             await batch.commit();
@@ -635,22 +951,29 @@ const SalesReportPage = () => {
     const handleSalesInvoiceSubmit = async (vals) => {
         setSalesInvoiceSubmitting(true);
         try {
-            const dt = moment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
+            console.log("🔍 Starting sales invoice submit with values:", vals);
+            console.log("🔍 Current shift ID:", currentShift?.id);
+            console.log("🔍 Editing invoice:", editingSalesInvoice);
+            
+            const dt = TimezoneService.toServerMoment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
             const data = {
                 date: Timestamp.fromDate(dt),
                 productId: vals.productId,
                 quantity: vals.quantity,
                 unitPrice: vals.unitPrice,
                 amount: vals.quantity * vals.unitPrice,
-                shiftId: currentShift.id,
+                shiftId: currentShift.id, // Always use currentShift.id for consistency
+                updatedAt: serverTimestamp(), // Add update timestamp
             };
             const product = products.find((p) => p.id === vals.productId);
             if (!product) {
                 throw new Error('Product not found');
             }
             data.productName = product.productName || "Unknown";
-            const isFuel = vals.type === "fuel";
-            const tankId = isFuel ? vals.tankId : null;
+            
+            // Since this form only handles non-fuel products, set type explicitly
+            const isFuel = false; // Always false for this form
+            const tankId = null; // No tank for non-fuel products
 
             const batch = writeBatch(db);
 
@@ -661,157 +984,140 @@ const SalesReportPage = () => {
                     return;
                 }
                 const original = editingSalesInvoice;
-                const originalProduct = products.find(p => p.id === original.productId);
-                const originalIsFuel = ['petrol', 'diesel'].includes(originalProduct.category);
+                const originalProductData = products.find(p => p.id === original.productId);
+                const originalIsFuel = ['petrol', 'diesel'].includes(originalProductData.category);
 
-                const { originalReversedStock, newRemainingStock } = await runTransaction(db, async (tx) => {
+                // First, read all the data we need outside of transactions
                     let originalReversedStock;
+                let newRemainingStock;
+
+                // Handle original stock reversal
                     if (originalIsFuel) {
                         const originalTankRef = doc(db, 'tanks', original.tankId);
-                        const originalTankDoc = await tx.get(originalTankRef);
+                    const originalTankDoc = await getDoc(originalTankRef);
                         if (!originalTankDoc.exists()) throw new Error('Original tank not found');
                         const originalTankStock = originalTankDoc.data().remainingStock || 0;
                         const reversedTankStock = originalTankStock + original.quantity;
-                        tx.update(originalTankRef, { remainingStock: reversedTankStock });
                         originalReversedStock = { tankId: original.tankId, stock: reversedTankStock };
                     } else {
                         const originalProductRef = doc(db, 'products', original.productId);
-                        const originalProductDoc = await tx.get(originalProductRef);
+                    const originalProductDoc = await getDoc(originalProductRef);
                         if (!originalProductDoc.exists()) throw new Error('Original product not found');
                         const originalProductStock = originalProductDoc.data().remainingStockAfter || 0;
                         const reversedProductStock = originalProductStock + original.quantity;
-                        tx.update(originalProductRef, { remainingStockAfter: reversedProductStock });
                         originalReversedStock = { productId: original.productId, stock: reversedProductStock };
                     }
 
-                    let newRemainingStock;
-                    if (isFuel) {
-                        if (!tankId) throw new Error('Tank ID is required for fuel products');
-                        const tankRef = doc(db, 'tanks', tankId);
-                        const tankDoc = await tx.get(tankRef);
-                        if (!tankDoc.exists()) throw new Error('Tank not found');
-                        const currentTankStock = tankDoc.data().remainingStock || 0;
-                        if (currentTankStock < vals.quantity) {
-                            throw new Error(`Insufficient stock in tank: available ${currentTankStock}, required ${vals.quantity}`);
-                        }
-                        const remainingTankStock = currentTankStock - vals.quantity;
-                        tx.update(tankRef, { remainingStock: remainingTankStock });
-                        newRemainingStock = { tankId: tankId, stock: remainingTankStock };
-                    } else {
+                // Handle new stock calculation (always non-fuel for this form)
                         const productRef = doc(db, 'products', vals.productId);
-                        const productDoc = await tx.get(productRef);
+                const productDoc = await getDoc(productRef);
                         if (!productDoc.exists()) throw new Error('Product not found');
                         const currentProductStock = productDoc.data().remainingStockAfter || 0;
                         if (currentProductStock < vals.quantity) {
                             throw new Error(`Insufficient stock for product: available ${currentProductStock}, required ${vals.quantity}`);
                         }
                         const remainingProductStock = currentProductStock - vals.quantity;
-                        tx.update(productRef, { remainingStockAfter: remainingProductStock });
                         newRemainingStock = { productId: vals.productId, stock: remainingProductStock };
-                    }
-
-                    return { originalReversedStock, newRemainingStock };
+                
+                console.log("🔍 Stock calculation:", {
+                    currentStock: currentProductStock,
+                    requestedQuantity: vals.quantity,
+                    remainingStock: remainingProductStock
                 });
+
+                // Now use a transaction only for the stock updates (always products for this form)
+                await runTransaction(db, async (tx) => {
+                    // Update original stock (reversal)
+                    const originalProductRef = doc(db, 'products', original.productId);
+                    tx.update(originalProductRef, { remainingStockAfter: originalReversedStock.stock });
+                    
+                    // Update new stock
+                    const productRef = doc(db, 'products', vals.productId);
+                    tx.update(productRef, { remainingStockAfter: newRemainingStock.stock });
+                });
+                
+                console.log("🔍 Transaction completed successfully");
 
                 const invoiceRef = doc(db, 'saleInvoices', editingSalesInvoice.id);
                 data.remainingStockAfter = newRemainingStock.stock;
-                data.tankId = isFuel ? tankId : null;
-                data.tankName = isFuel ? tanks.find(t => t.id === tankId)?.tankName || 'Unknown' : 'N/A';
+                data.tankId = null; // Always null for non-fuel products
+                data.tankName = 'N/A'; // Always N/A for non-fuel products
+                
+                console.log("🔍 Invoice data to be updated:", data);
                 batch.update(invoiceRef, data);
 
-                if (editingSalesInvoice.cashflowId) {
-                    const cashflowRef = doc(db, 'cashflow', editingSalesInvoice.cashflowId);
-                    batch.update(cashflowRef, {
-                        amount: data.amount,
-                        updatedAt: serverTimestamp(),
-                    });
-                } else {
-                    const cashflowId = await createCashflowEntry(batch, data.amount, 'cashIn', data.date, editingSalesInvoice.id, currentShift.id, "SalesInvoice");
-                    batch.update(invoiceRef, { cashflowId });
-                }
+                // Remove cashflow entry creation - will be handled when shift ends
+                // Just update the invoice without cashflow
 
+                console.log("🔍 Committing batch update...");
                 await batch.commit();
+                console.log("🔍 Batch committed successfully");
 
-                if ('tankId' in originalReversedStock) {
-                    const tank = tanks.find(t => t.id === originalReversedStock.tankId);
-                    await logProductTransaction({
-                        productId: editingSalesInvoice.productId,
-                        productName: editingSalesInvoice.productName,
-                        eventType: 'sale-reversal',
-                        quantity: editingSalesInvoice.quantity,
-                        unitPrice: editingSalesInvoice.unitPrice,
-                        customDate: editingSalesInvoice.date,
-                        tankId: originalReversedStock.tankId,
-                        tankName: tank?.tankName || 'Unknown',
-                        remainingStockAfter: originalReversedStock.stock,
-                    });
-                } else {
-                    const product = products.find(p => p.id === originalReversedStock.productId);
+                // Log the transaction for debugging (always product-based for this form)
+                const originalProduct = products.find(p => p.id === originalReversedStock.productId);
                     await logProductTransaction({
                         productId: originalReversedStock.productId,
-                        productName: product?.productName || 'Unknown',
+                    productName: originalProduct?.productName || 'Unknown',
                         eventType: 'sale-reversal',
                         quantity: editingSalesInvoice.quantity,
                         unitPrice: editingSalesInvoice.unitPrice,
                         customDate: editingSalesInvoice.date,
                         remainingStockAfter: originalReversedStock.stock,
                     });
-                }
+                
+                console.log("🔍 Logged sale-reversal transaction");
 
-                if ('tankId' in newRemainingStock) {
-                    const tank = tanks.find(t => t.id === newRemainingStock.tankId);
+                // Log the new sale transaction (always product-based for this form)
+                const newProduct = products.find(p => p.id === newRemainingStock.productId);
                     await logProductTransaction({
-                        productId: vals.productId,
+                    productId: newRemainingStock.productId,
                         productName: data.productName,
                         eventType: 'sale',
                         quantity: vals.quantity,
                         unitPrice: vals.unitPrice,
                         customDate: data.date,
-                        tankId: newRemainingStock.tankId,
-                        tankName: tank?.tankName || 'Unknown',
                         remainingStockAfter: newRemainingStock.stock,
                     });
-                } else {
-                    const product = products.find(p => p.id === newRemainingStock.productId);
-                    await logProductTransaction({
-                        productId: newRemainingStock.productId,
-                        productName: product?.productName || 'Unknown',
-                        eventType: 'sale',
-                        quantity: vals.quantity,
-                        unitPrice: vals.unitPrice,
-                        customDate: data.date,
-                        remainingStockAfter: newRemainingStock.stock,
-                    });
-                }
+                
+                console.log("🔍 Logged new sale transaction");
 
+                console.log("🔍 Sales invoice updated successfully");
                 message.success("Sales invoice updated");
                 setEditingSalesInvoice(null);
+                
+                console.log("🔍 Refreshing data...");
+                await fetchAllData();
+                console.log("🔍 Data refresh completed");
             } else {
                 let remainingStockAfter;
                 const invoiceRef = doc(collection(db, 'saleInvoices'));
                 if (isFuel) {
                     if (!tankId) throw new Error('Tank ID is required for fuel products');
                     const tankRef = doc(db, 'tanks', tankId);
-                    await runTransaction(db, async (tx) => {
-                        const tankDoc = await tx.get(tankRef);
+                    const tankDoc = await getDoc(tankRef);
                         if (!tankDoc.exists()) throw new Error('Tank not found');
                         const currentStock = tankDoc.data().remainingStock || 0;
                         if (currentStock < vals.quantity) {
                             throw new Error(`Insufficient stock in tank: available ${currentStock}, required ${vals.quantity}`);
                         }
                         remainingStockAfter = currentStock - vals.quantity;
+                    
+                    // Update tank stock in transaction
+                    await runTransaction(db, async (tx) => {
                         tx.update(tankRef, { remainingStock: remainingStockAfter });
                     });
                 } else {
                     const productRef = doc(db, 'products', vals.productId);
-                    await runTransaction(db, async (tx) => {
-                        const productDoc = await tx.get(productRef);
+                    const productDoc = await getDoc(productRef);
                         if (!productDoc.exists()) throw new Error('Product not found');
                         const currentStock = productDoc.data().remainingStockAfter || 0;
                         if (currentStock < vals.quantity) {
                             throw new Error(`Insufficient stock for product: available ${currentStock}, required ${vals.quantity}`);
                         }
                         remainingStockAfter = currentStock - vals.quantity;
+                    
+                    // Update product stock in transaction
+                    await runTransaction(db, async (tx) => {
                         tx.update(productRef, { remainingStockAfter: remainingStockAfter });
                     });
                 }
@@ -821,8 +1127,8 @@ const SalesReportPage = () => {
                 data.createdBy = user.uid;
                 data.createdAt = Timestamp.now();
 
-                const cashflowId = await createCashflowEntry(batch, data.amount, 'cashIn', data.date, invoiceRef.id, currentShift.id, "SalesInvoice");
-                batch.set(invoiceRef, { ...data, cashflowId });
+                // Remove cashflow entry creation - will be handled when shift ends
+                batch.set(invoiceRef, { ...data });
 
                 await batch.commit();
 
@@ -840,11 +1146,23 @@ const SalesReportPage = () => {
                 message.success("Sales invoice created");
             }
 
+            console.log("🔍 Resetting form and closing modal...");
             salesInvoiceForm.resetFields();
             setIsSalesInvoiceModalOpen(false);
+            setEditingSalesInvoice(null); // Ensure editing state is cleared
             setSalesTotal(0);
-            fetchAllData();
+            
+            console.log("🔍 Final data refresh...");
+            await fetchAllData();
+            console.log("🔍 All operations completed successfully");
         } catch (err) {
+            console.error("❌ Sales invoice operation failed:", err);
+            console.error("❌ Error details:", {
+                message: err.message,
+                stack: err.stack,
+                editingInvoice: editingSalesInvoice,
+                formValues: vals
+            });
             message.error("Operation failed: " + err.message);
         } finally {
             setSalesInvoiceSubmitting(false);
@@ -853,12 +1171,11 @@ const SalesReportPage = () => {
 
     const handleEditSalesReturnInvoice = (rec) => {
         setEditingSalesReturnInvoice(rec);
-        const isFuel = !!rec.tankId;
         const recDate = parseInvoiceDate(rec.date);
         salesReturnInvoiceForm.setFieldsValue({
-            type: isFuel ? "fuel" : "non-fuel",
-            date: moment(recDate).format("YYYY-MM-DD"),
-            time: moment(recDate).format("HH:mm"),
+            type: "fuel", // Always fuel for sales returns
+            date: TimezoneService.formatServerDate(recDate, "YYYY-MM-DD"),
+            time: TimezoneService.formatServerDate(recDate, "HH:mm"),
             productId: rec.productId,
             tankId: rec.tankId,
             quantity: rec.quantity,
@@ -886,9 +1203,7 @@ const SalesReportPage = () => {
                 newRemaining = await updateProductremainingStockAfter(rec.productId, -rec.quantity);
             }
 
-            if (rec.cashflowId) {
-                batch.delete(doc(db, "cashflow", rec.cashflowId));
-            }
+            // No need to delete cashflow entries - they are only created when shift ends
             batch.delete(doc(db, "saleReturnInvoices", id));
 
             await batch.commit();
@@ -914,7 +1229,7 @@ const SalesReportPage = () => {
     const handleSalesReturnInvoiceSubmit = async (vals) => {
         setSalesReturnInvoiceSubmitting(true);
         try {
-            const dt = moment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
+            const dt = TimezoneService.toServerMoment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
             const data = {
                 date: Timestamp.fromDate(dt),
                 productId: vals.productId,
@@ -970,11 +1285,13 @@ const SalesReportPage = () => {
 
                 if (isFuel) {
                     const tankRef = doc(db, 'tanks', vals.tankId);
-                    await runTransaction(db, async (tx) => {
-                        const tankDoc = await tx.get(tankRef);
+                    const tankDoc = await getDoc(tankRef);
                         if (!tankDoc.exists()) throw new Error('Tank not found');
                         const currentStock = tankDoc.data().remainingStock || 0;
                         remainingStockAfter = currentStock + vals.quantity;
+                    
+                    // Update tank stock in transaction
+                    await runTransaction(db, async (tx) => {
                         tx.update(tankRef, { remainingStock: remainingStockAfter });
                     });
                 } else {
@@ -985,16 +1302,8 @@ const SalesReportPage = () => {
                 const invoiceRef = doc(db, "saleReturnInvoices", editingSalesReturnInvoice.id);
                 batch.update(invoiceRef, data);
 
-                if (editingSalesReturnInvoice.cashflowId) {
-                    const cashflowRef = doc(db, 'cashflow', editingSalesReturnInvoice.cashflowId);
-                    batch.update(cashflowRef, {
-                        amount: data.amount,
-                        updatedAt: serverTimestamp(),
-                    });
-                } else {
-                    const cashflowId = await createCashflowEntry(batch, data.amount, 'cashOut', data.date, editingSalesReturnInvoice.id, currentShift.id, "SalesReturnInvoice");
-                    batch.update(invoiceRef, { cashflowId });
-                }
+                // Remove cashflow entry creation - will be handled when shift ends
+                // Just update the invoice without cashflow
 
                 await batch.commit();
                 message.success("Sales return invoice updated");
@@ -1003,11 +1312,13 @@ const SalesReportPage = () => {
                 const invoiceRef = doc(collection(db, 'saleReturnInvoices'));
                 if (isFuel) {
                     const tankRef = doc(db, 'tanks', vals.tankId);
-                    await runTransaction(db, async (tx) => {
-                        const tankDoc = await tx.get(tankRef);
+                    const tankDoc = await getDoc(tankRef);
                         if (!tankDoc.exists()) throw new Error('Tank not found');
                         const currentStock = tankDoc.data().remainingStock || 0;
                         remainingStockAfter = currentStock + vals.quantity;
+                    
+                    // Update tank stock in transaction
+                    await runTransaction(db, async (tx) => {
                         tx.update(tankRef, { remainingStock: remainingStockAfter });
                     });
                 } else {
@@ -1017,8 +1328,8 @@ const SalesReportPage = () => {
                 data.createdBy = user.uid;
                 data.createdAt = Timestamp.now();
 
-                const cashflowId = await createCashflowEntry(batch, data.amount, 'cashOut', data.date, invoiceRef.id, currentShift.id, "SalesReturnInvoice");
-                batch.set(invoiceRef, { ...data, cashflowId });
+                // Remove cashflow entry creation - will be handled when shift ends
+                batch.set(invoiceRef, { ...data });
 
                 await batch.commit();
                 message.success("Sales return invoice created");
@@ -1051,8 +1362,8 @@ const SalesReportPage = () => {
         purchaseInvoiceForm.setFieldsValue({
             supplierId: rec.supplierId,
             purchaseType: rec.purchaseType,
-            date: moment(parseInvoiceDate(rec.date)).format("YYYY-MM-DD"),
-            time: moment(parseInvoiceDate(rec.date)).format("HH:mm"),
+            date: TimezoneService.formatServerDate(parseInvoiceDate(rec.date), "YYYY-MM-DD"),
+            time: TimezoneService.formatServerDate(parseInvoiceDate(rec.date), "HH:mm"),
             productId: rec.productId,
             tankId: rec.tankId,
             quantity: rec.quantity,
@@ -1077,15 +1388,13 @@ const SalesReportPage = () => {
                 remainingStockAfter = tank.remainingStock - rec.quantity;
                 batch.update(doc(db, "tanks", rec.tankId), {
                     remainingStock: remainingStockAfter,
-                    lastUpdated: new Date(),
+                    lastUpdated: TimezoneService.createServerDate(),
                 });
             } else {
                 remainingStockAfter = await updateProductremainingStockAfter(rec.productId, -rec.quantity);
             }
 
-            if (rec.cashflowId) {
-                batch.delete(doc(db, "cashflow", rec.cashflowId));
-            }
+            // No need to delete cashflow entries - they are only created when shift ends
             batch.delete(doc(db, "purchaseInvoices", id));
 
             await batch.commit();
@@ -1127,7 +1436,7 @@ const SalesReportPage = () => {
         const batch = writeBatch(db); // Initialize the batch operation
 
         try {
-            const dt = moment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
+            const dt = TimezoneService.toServerMoment(`${vals.date} ${vals.time}`, "YYYY-MM-DD HH:mm").toDate();
 
             // 1. Prepare the invoice data object.
             // As requested, 'purchaseType' from the form is included right here.
@@ -1206,15 +1515,8 @@ const SalesReportPage = () => {
                 const invoiceRef = doc(db, "purchaseInvoices", editingPurchaseInvoice.id);
                 batch.update(invoiceRef, data);
 
-                // Update or create corresponding cashflow entry
-                if (editingPurchaseInvoice.cashflowId) {
-                    batch.update(doc(db, 'cashflow', editingPurchaseInvoice.cashflowId), {
-                        amount: data.amount, updatedAt: serverTimestamp(),
-                    });
-                } else {
-                    const cashflowId = await createCashflowEntry(batch, data.amount, 'cashOut', data.date, editingPurchaseInvoice.id, currentShift.id, "purchaseInvoice");
-                    batch.update(invoiceRef, { cashflowId });
-                }
+                // Remove cashflow entry creation - will be handled when shift ends
+                // Just update the invoice without cashflow
                 message.success("Purchase invoice updated successfully");
 
             } else {
@@ -1237,8 +1539,8 @@ const SalesReportPage = () => {
 
                 data.remainingStockAfter = remainingStockAfter;
                 const invoiceRef = doc(collection(db, 'purchaseInvoices'));
-                const cashflowId = await createCashflowEntry(batch, data.amount, 'cashOut', data.date, invoiceRef.id, currentShift.id, "purchaseInvoice");
-                batch.set(invoiceRef, { ...data, cashflowId });
+                // Remove cashflow entry creation - will be handled when shift ends
+                batch.set(invoiceRef, { ...data });
                 message.success("Purchase invoice created successfully");
             }
 
@@ -1270,7 +1572,7 @@ const SalesReportPage = () => {
         setAdjustmentsSubmitting(true);
         try {
             const data = {
-                date: Timestamp.fromDate(new Date()),
+                date: Timestamp.fromDate(TimezoneService.createServerDate()),
                 shiftId: currentShift.id,
                 advanceCash: vals.advanceCash || 0,
                 bankPayment: vals.bankPayment || 0,
@@ -1385,7 +1687,7 @@ const SalesReportPage = () => {
             const price = newPrice != null ? newPrice : product.salesPrice;
             const amount = volume * price;
             const newRemaining = tank.remainingStock - volume;
-            const timestamp = Timestamp.fromDate(new Date(recordedAt));
+            const timestamp = Timestamp.fromDate(TimezoneService.createServerDate(recordedAt));
 
             const batch = writeBatch(db);
 
@@ -1393,7 +1695,7 @@ const SalesReportPage = () => {
             batch.update(nozzleRef, {
                 lastReading: currentReading,
                 totalSales: (nozzle.totalSales || 0) + amount,
-                lastUpdated: new Date(),
+                lastUpdated: TimezoneService.createServerDate(),
             });
 
             const readingRef = doc(collection(db, "readings"));
@@ -1415,11 +1717,11 @@ const SalesReportPage = () => {
             const tankRef = doc(db, "tanks", tankId);
             batch.update(tankRef, {
                 remainingStock: newRemaining,
-                lastUpdated: new Date(),
+                lastUpdated: TimezoneService.createServerDate(),
             });
 
-            const cashflowId = await createCashflowEntry(batch, amount, 'cashIn', timestamp, readingRef.id, currentShift.id, "nozzelReading");
-            batch.set(readingRef, { ...readingData, cashflowId });
+                            // Remove cashflow entry creation - will be handled when shift ends
+                batch.set(readingRef, { ...readingData });
 
             await batch.commit();
 
@@ -1454,7 +1756,7 @@ const SalesReportPage = () => {
             currentReading: record.currentReading,
             tankId: record.tankId,
             newPrice: record.effectivePrice,
-            recordedAt: moment(record.timestamp.toDate()).format("YYYY-MM-DDTHH:mm"),
+            recordedAt: TimezoneService.formatServerDate(record.timestamp.toDate(), "YYYY-MM-DDTHH:mm"),
         });
         setIsReadingModalOpen(true);
     };
@@ -1483,7 +1785,7 @@ const SalesReportPage = () => {
 
             const effectivePrice = newPrice != null ? newPrice : originalReading.effectivePrice;
             const newSalesAmount = newSalesVolume * effectivePrice;
-            const timestamp = Timestamp.fromDate(new Date(recordedAt));
+            const timestamp = Timestamp.fromDate(TimezoneService.createServerDate(recordedAt));
 
             const originalTankId = originalReading.tankId;
             const newTankId = tankId;
@@ -1525,17 +1827,17 @@ const SalesReportPage = () => {
                     newRemaining = newOriginalStock - newSalesVolume;
                     transaction.update(originalTankRef, {
                         remainingStock: newRemaining,
-                        lastUpdated: new Date()
+                        lastUpdated: TimezoneService.getFirebaseTimestamp()
                     });
                 } else {
                     transaction.update(originalTankRef, {
                         remainingStock: newOriginalStock,
-                        lastUpdated: new Date()
+                        lastUpdated: TimezoneService.getFirebaseTimestamp()
                     });
                     newRemaining = currentNewStock - newSalesVolume;
                     transaction.update(newTankRef, {
                         remainingStock: newRemaining,
-                        lastUpdated: new Date()
+                        lastUpdated: TimezoneService.getFirebaseTimestamp()
                     });
                 }
 
@@ -1555,21 +1857,11 @@ const SalesReportPage = () => {
                 salesVolume: newSalesVolume,
                 salesAmount: newSalesAmount,
                 timestamp: timestamp,
-                lastUpdated: new Date(),
+                lastUpdated: TimezoneService.createServerDate(),
                 updatedBy: user.uid
             });
 
-            if (originalReading.cashflowId) {
-                const cashflowRef = doc(db, 'cashflow', originalReading.cashflowId);
-                batch.update(cashflowRef, {
-                    amount: newSalesAmount,
-                    date: timestamp,
-                    updatedAt: serverTimestamp(),
-                });
-            } else {
-                const cashflowId = await createCashflowEntry(batch, newSalesAmount, 'cashIn', timestamp, readingId, currentShift.id, "nozzelReading");
-                batch.update(readingRef, { cashflowId });
-            }
+            // No need to update cashflow entries - they are only created when shift ends
 
             await batch.commit();
 
@@ -1646,19 +1938,17 @@ const SalesReportPage = () => {
 
                 transaction.update(tankRef, {
                     remainingStock: revertedStock,
-                    lastUpdated: new Date(),
+                    lastUpdated: TimezoneService.createServerDate(),
                 });
 
                 transaction.update(nozzleRef, {
                     totalSales: revertedTotalSales,
-                    lastUpdated: new Date(),
+                    lastUpdated: TimezoneService.createServerDate(),
                 });
 
                 transaction.delete(doc(db, "readings", id));
 
-                if (record.cashflowId) {
-                    transaction.delete(doc(db, "cashflow", record.cashflowId));
-                }
+                // No need to delete cashflow entries - they are only created when shift ends
 
                 const logRef = doc(collection(db, "productTransactions"));
                 transaction.set(logRef, {
@@ -1672,7 +1962,7 @@ const SalesReportPage = () => {
                     tankName: tankData.tankName,
                     remainingStockAfter: revertedStock,
                     timestamp: record.timestamp,
-                    createdAt: new Date(),
+                    createdAt: TimezoneService.getFirebaseTimestamp(),
                     createdBy: user?.uid,
                 });
             });
@@ -1731,7 +2021,7 @@ const SalesReportPage = () => {
                 dipMm,
                 dipLiters, // Storing the calculated liters for historical data is useful.
                 bookStock,
-                recordedAt: Timestamp.fromDate(new Date(recordedAt)),
+                recordedAt: Timestamp.fromDate(TimezoneService.getFirebaseTimestamp(recordedAt)),
                 createdBy: user.uid,
                 shiftId: currentShift.id,
             });
@@ -1754,23 +2044,52 @@ const SalesReportPage = () => {
         }
     };
 
+    const handleDeleteDipChart = async (dipChartRecord) => {
+        try {
+            setLoading(true);
+            
+            // First, get the dip chart data to know what to revert
+            const { tankId, bookStock, id } = dipChartRecord;
+            
+            if (bookStock !== null && bookStock !== undefined) {
+                // Revert the tank's remainingStock back to the bookStock value
+                await updateDoc(doc(db, "tanks", tankId), {
+                    remainingStock: bookStock,
+                    lastUpdated: Timestamp.now(),
+                });
+            }
+            
+            // Delete the dip chart record
+            await deleteDoc(doc(db, "dipcharts", id));
+            
+            message.success("Dip entry deleted and tank stock reverted successfully");
+            fetchAllData(); // Refresh data to show the reverted stock
+            
+        } catch (err) {
+            console.error("Failed to delete dip chart:", err);
+            message.error("Failed to delete dip chart: " + err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const shiftEndTime = selectedShift?.endTime
-        ? selectedShift.endTime.toDate()
-        : new Date();
+        ? TimezoneService.createServerDate(selectedShift.endTime.toDate())
+        : TimezoneService.createServerDate();
     const handlePreviewPDF = async () => {
         setExportLoading(true);
         try {
-            const filteredSales = filterDataByShift(salesInvoices);
-            const filteredSalesReturn = filterDataByShift(salesReturnInvoices);
-            const filteredPurchase = filterDataByShift(purchaseInvoices);
-            const filteredDip = filterDataByShift(dipChartData);
+            const filteredSales = filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+            const filteredSalesReturn = filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+            const filteredPurchase = filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+            const filteredDip = filterDataByShift(dipChartData).sort((a, b) => parseInvoiceDate(a.recordedAt) - parseInvoiceDate(b.recordedAt));
             const cumulativeDipChartData = dipChartData.filter(
                 (record) => record.recordedAt.toDate() <= shiftEndTime
             );
             const previewUrl = await exportReportToPDF({
                 settings,
                 reportType: 'shift',
-                dateRange: [selectedShift.startTime.toDate(), selectedShift.endTime?.toDate() || new Date()],
+                dateRange: [TimezoneService.createServerDate(selectedShift.startTime.toDate()), selectedShift.endTime?.toDate() ? TimezoneService.createServerDate(selectedShift.endTime.toDate()) : TimezoneService.createServerDate()],
                 reportData,
                 filteredDipChartData: filteredDip,
                 filteredSalesInvoices: filteredSales,
@@ -1845,6 +2164,11 @@ const SalesReportPage = () => {
                                 onClick={() => {
                                     setEditingSalesInvoice(null);
                                     salesInvoiceForm.resetFields();
+                                    salesInvoiceForm.setFieldsValue({
+                                        date: TimezoneService.formatServerDate(null, "YYYY-MM-DD"),
+                                        time: TimezoneService.formatServerDate(null, "HH:mm"),
+                                        type: "non-fuel",
+                                    });
                                     setSalesTotal(0);
                                     setIsSalesInvoiceModalOpen(true);
                                 }}
@@ -1862,6 +2186,11 @@ const SalesReportPage = () => {
                                 onClick={() => {
                                     setEditingSalesReturnInvoice(null);
                                     salesReturnInvoiceForm.resetFields();
+                                    salesReturnInvoiceForm.setFieldsValue({
+                                        date: TimezoneService.formatServerDate(null, "YYYY-MM-DD"),
+                                        time: TimezoneService.formatServerDate(null, "HH:mm"),
+                                        type: "fuel",
+                                    });
                                     setIsSalesReturnInvoiceModalOpen(true);
                                 }}
                             >
@@ -1919,17 +2248,17 @@ const SalesReportPage = () => {
                                 icon={<FilePdfOutlined />}
                                 onClick={() => {
                                     setExportLoading(true);
-                                    const filteredSales = filterDataByShift(salesInvoices);
-                                    const filteredSalesReturn = filterDataByShift(salesReturnInvoices);
-                                    const filteredPurchase = filterDataByShift(purchaseInvoices);
-                                    const filteredDip = filterDataByShift(dipChartData);
+                                    const filteredSales = filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                    const filteredSalesReturn = filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                    const filteredPurchase = filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                    const filteredDip = filterDataByShift(dipChartData).sort((a, b) => parseInvoiceDate(a.recordedAt) - parseInvoiceDate(b.recordedAt));
                                     const cumulativeDipChartData = dipChartData.filter(
                                         (record) => record.recordedAt.toDate() <= shiftEndTime
                                     );
                                     exportReportToPDF({
                                         settings,
                                         reportType: 'shift',
-                                        dateRange: [selectedShift.startTime.toDate(), selectedShift.endTime?.toDate() || new Date()],
+                                        dateRange: [TimezoneService.createServerDate(selectedShift.startTime.toDate()), selectedShift.endTime?.toDate() ? TimezoneService.createServerDate(selectedShift.endTime.toDate()) : TimezoneService.createServerDate()],
                                         reportData,
                                         filteredDipChartData: filteredDip,
                                         filteredSalesInvoices: filteredSales,
@@ -1943,18 +2272,6 @@ const SalesReportPage = () => {
                             >
                                 Export PDF
                             </Button>
-                            <Button
-                                type="primary"
-                                style={{
-                                    backgroundColor: "#f5222d",
-                                    borderColor: "#f5222d",
-                                    flex: "1 1 140px",
-                                    maxWidth: "180px"
-                                }}
-                                onClick={handleEndShift}
-                            >
-                                End Shift
-                            </Button>
                         </div>
 
                         <div className="d-flex flex-wrap justify-content-end align-items-center gap-2 mt-3">
@@ -1967,7 +2284,7 @@ const SalesReportPage = () => {
                                 >
                                     {shifts.map(shift => (
                                         <Option key={shift.id} value={shift.id}>
-                                            Shift starting at {moment(shift.startTime.toDate()).format("DD/MM/YYYY HH:mm")}
+                                            Shift starting at {TimezoneService.formatServerDate(shift.startTime.toDate(), "DD/MM/YYYY HH:mm")}
                                         </Option>
                                     ))}
                                 </Select>
@@ -1979,6 +2296,83 @@ const SalesReportPage = () => {
                                 </Button>
                             </Space>
                         </div>
+
+                        {/* End Shift Section - Separate and Safe Location */}
+                        <div 
+                            className="d-flex justify-content-end align-items-center mt-4 pt-3" 
+                            style={{ 
+                                borderTop: "1px solid #d9d9d9",
+                                marginTop: "20px",
+                                paddingTop: "15px"
+                            }}
+                        >
+                            <div style={{ textAlign: "right" }}>
+                                <small style={{ color: "#8c8c8c", display: "block", marginBottom: "8px" }}>
+                                    Current Shift: {currentShift ? TimezoneService.formatServerDate(currentShift.startTime.toDate(), "DD/MM/YYYY HH:mm") : "No active shift"}
+                                </small>
+                                <Button
+                                    type="primary"
+                                    danger
+                                    size="large"
+                                    loading={exportLoading}
+                                    style={{
+                                        fontSize: "14px",
+                                        fontWeight: "600",
+                                        height: "40px",
+                                        minWidth: "120px"
+                                    }}
+                                    disabled={!currentShift}
+                                    onClick={async () => {
+                                        try {
+                                            setExportLoading(true);
+                                            const selectedShift = shifts.find(s => s.id === currentShift.id);
+                                            if (!selectedShift) {
+                                                message.error("Selected shift not found");
+                                                setExportLoading(false);
+                                                return;
+                                            }
+
+                                            const shiftEndTime = selectedShift?.endTime
+                                                ? TimezoneService.createServerDate(selectedShift.endTime.toDate())
+                                                : TimezoneService.createServerDate();
+
+                                            const filteredSales = filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredSalesReturn = filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredPurchase = filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredDip = filterDataByShift(dipChartData).sort((a, b) => parseInvoiceDate(a.recordedAt) - parseInvoiceDate(b.recordedAt));
+                                            const cumulativeDipChartData = dipChartData.filter(
+                                                (record) => record.recordedAt.toDate() <= shiftEndTime
+                                            );
+                                            
+                                            // Generate PDF preview first
+                                            const pdfPreviewUrl = await exportReportToPDF({
+                                                settings,
+                                                reportType: 'shift',
+                                                dateRange: [TimezoneService.createServerDate(selectedShift.startTime.toDate()), selectedShift.endTime?.toDate() ? TimezoneService.createServerDate(selectedShift.endTime.toDate()) : TimezoneService.createServerDate()],
+                                                reportData,
+                                                filteredDipChartData: filteredDip,
+                                                filteredSalesInvoices: filteredSales,
+                                                filteredSalesReturnInvoices: filteredSalesReturn,
+                                                filteredPurchaseInvoices: filteredPurchase,
+                                                tanks, 
+                                                preview: true, 
+                                                dipChartData: cumulativeDipChartData, 
+                                                shiftSummary: shiftWiseSummaries[selectedShift.id] || { odhar: 0, wasooli: 0, discounts: 0 },
+                                            });
+
+                                            setPdfPreviewUrl(pdfPreviewUrl);
+                                            setPdfPreviewVisible(true);
+                                            setExportLoading(false);
+                                        } catch (error) {
+                                            setExportLoading(false);
+                                            message.error("Failed to generate PDF preview: " + error.message);
+                                        }
+                                    }}
+                                    >
+                                        🔚 End Shift
+                                    </Button>
+                            </div>
+                        </div>
                     </Col>
                 </Row>
             </div>
@@ -1986,7 +2380,7 @@ const SalesReportPage = () => {
             <div id="report-content" ref={reportRef} style={{ padding: "0 20px" }}>
                 <Spin spinning={loading}>
                     <Divider orientation="center">
-                        Shift Totals for {selectedShift?.name || `Shift starting at ${moment(selectedShift?.startTime.toDate()).format("DD/MM/YYYY HH:mm")}`}
+                        Shift Totals for {selectedShift?.name || `Shift starting at ${TimezoneService.formatServerDate(selectedShift?.startTime.toDate(), "DD/MM/YYYY HH:mm")}`}
                     </Divider>
                     <Row gutter={[16, 16]}>
                         <Col xs={24} sm={8}>
@@ -2067,7 +2461,7 @@ const SalesReportPage = () => {
                     <Divider orientation="center">Adjustments Entries</Divider>
                     <div style={{ overflowX: "auto" }}>
                         <Table
-                            dataSource={filterDataByShift(adjustments)}
+                            dataSource={filterDataByShift(adjustments).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))}
                             rowKey="id"
                             pagination={false}
                             bordered
@@ -2076,7 +2470,7 @@ const SalesReportPage = () => {
                                     title: "Date",
                                     dataIndex: "date",
                                     key: "date",
-                                    render: (d) => parseInvoiceDate(d).toLocaleDateString(),
+                                    render: (d) => TimezoneService.formatServerDate(parseInvoiceDate(d), 'DD/MM/YYYY'),
                                 },
                                 { title: "Wasooli", dataIndex: "wasooli", key: "wasooli" },
                                 { title: "Odhar", dataIndex: "odhar", key: "odhar" },
@@ -2243,26 +2637,9 @@ const SalesReportPage = () => {
                                         (user.role?.includes("admin") ||
                                             record.createdBy === user.uid) && (
                                             <Space>
-                                                <Button
-                                                    icon={<EditOutlined />}
-                                                    onClick={() => {
-                                                        dipChartForm.setFieldsValue({
-                                                            tankId: record.tankId,
-                                                            dipMm: record.dipMm,
-                                                            recordedAt: moment(
-                                                                parseInvoiceDate(record.recordedAt)
-                                                            ).format("YYYY-MM-DDTHH:mm"),
-                                                        });
-                                                        setIsDipChartModalOpen(true);
-                                                    }}
-                                                />
                                                 <Popconfirm
                                                     title="Delete this entry?"
-                                                    onConfirm={async () => {
-                                                        await deleteDoc(doc(db, "dipcharts", record.id));
-                                                        message.success("Dip entry deleted");
-                                                        fetchAllData();
-                                                    }}
+                                                    onConfirm={() => handleDeleteDipChart(record)}
                                                 >
                                                     <Button icon={<DeleteOutlined />} danger />
                                                 </Popconfirm>
@@ -2270,7 +2647,7 @@ const SalesReportPage = () => {
                                         ),
                                 },
                             ]}
-                            dataSource={filterDataByShift(dipChartData)}
+                            dataSource={filterDataByShift(dipChartData).sort((a, b) => parseInvoiceDate(a.recordedAt) - parseInvoiceDate(b.recordedAt))}
                             rowKey="id"
                             pagination={false}
                             bordered
@@ -2321,9 +2698,16 @@ const SalesReportPage = () => {
                     <Row gutter={[16, 16]}>
                         <Col xs={24} md={12}>
                             <TitleTypography level={4}>Sales Invoices</TitleTypography>
+                            {/* Debug Info */}
+                            <div style={{ marginBottom: '8px', fontSize: '12px', color: '#666' }}>
+                                <strong>Debug:</strong> Total invoices: {salesInvoices.length} | 
+                                Current shift: {currentShift?.id || 'None'} | 
+                                Selected shift: {selectedShift?.id || 'None'} | 
+                                Filtered count: {filterDataByShift(salesInvoices).length}
+                            </div>
                             <div style={{ overflowX: "auto" }}>
                                 <Table
-                                    dataSource={filterDataByShift(salesInvoices)}
+                                    dataSource={filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))}
                                     rowKey="id"
                                     pagination={false}
                                     bordered
@@ -2332,7 +2716,7 @@ const SalesReportPage = () => {
                                             title: "Date",
                                             dataIndex: "date",
                                             key: "date",
-                                            render: (d) => parseInvoiceDate(d).toLocaleDateString(),
+                                            render: (d) => TimezoneService.formatServerDate(parseInvoiceDate(d), 'DD/MM/YYYY'),
                                         },
                                         { title: "Product", dataIndex: "productName", key: "productName" },
                                         { title: "Tank", dataIndex: "tankName", key: "tankName", render: name => name || 'N/A' },
@@ -2374,7 +2758,7 @@ const SalesReportPage = () => {
                                         },
                                     ]}
                                     summary={() => {
-                                        const sub = filterDataByShift(salesInvoices).filter(i => i.source !== "singlePage").reduce(
+                                        const sub = filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date)).filter(i => i.source !== "singlePage").reduce(
                                             (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
                                             0
                                         );
@@ -2398,7 +2782,7 @@ const SalesReportPage = () => {
                             <TitleTypography level={4}>Purchase Invoices</TitleTypography>
                             <div style={{ overflowX: "auto" }}>
                                 <Table
-                                    dataSource={filterDataByShift(purchaseInvoices)}
+                                    dataSource={filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))}
                                     rowKey="id"
                                     pagination={false}
                                     bordered
@@ -2408,7 +2792,7 @@ const SalesReportPage = () => {
                                             title: "Date",
                                             dataIndex: "date",
                                             key: "date",
-                                            render: (d) => parseInvoiceDate(d).toLocaleDateString(),
+                                            render: (d) => TimezoneService.formatServerDate(parseInvoiceDate(d), 'DD/MM/YYYY'),
                                         },
                                         {
                                             title: "Type",
@@ -2460,7 +2844,7 @@ const SalesReportPage = () => {
                                         },
                                     ]}
                                     summary={() => {
-                                        const sub = filterDataByShift(purchaseInvoices)
+                                        const sub = filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))
                                             .filter(i => i.purchaseType !== "fuel") // Correctly filter out 'fuel' purchases
                                             .reduce(
                                                 (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
@@ -2491,7 +2875,7 @@ const SalesReportPage = () => {
                             <TitleTypography level={4}>Sales Return Invoices</TitleTypography>
                             <div style={{ overflowX: "auto" }}>
                                 <Table
-                                    dataSource={filterDataByShift(salesReturnInvoices)}
+                                    dataSource={filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))}
                                     rowKey="id"
                                     pagination={false}
                                     bordered
@@ -2500,7 +2884,7 @@ const SalesReportPage = () => {
                                             title: "Date",
                                             dataIndex: "date",
                                             key: "date",
-                                            render: (d) => parseInvoiceDate(d).toLocaleDateString(),
+                                            render: (d) => TimezoneService.formatServerDate(parseInvoiceDate(d), 'DD/MM/YYYY'),
                                         },
                                         { title: "Product", dataIndex: "productName", key: "productName" },
                                         { title: "Tank", dataIndex: "tankName", key: "tankName", render: name => name || 'N/A' },
@@ -2542,7 +2926,7 @@ const SalesReportPage = () => {
                                         },
                                     ]}
                                     summary={() => {
-                                        const sub = filterDataByShift(salesReturnInvoices)
+                                        const sub = filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date))
                                             .filter(item => item.source !== 'singlePage') // Exclude items with source 'singlePage'
                                             .reduce(
                                                 (s, i) => s + (typeof i.amount === 'number' ? i.amount : 0),
@@ -2584,9 +2968,9 @@ const SalesReportPage = () => {
                     layout="vertical"
                     onFinish={handleSalesInvoiceSubmit}
                     initialValues={{
-                        date: moment().format("YYYY-MM-DD"),
-                        time: moment().format("HH:mm"),
-                        type: "fuel",
+                        date: TimezoneService.formatServerDate(null, "YYYY-MM-DD"),
+                        time: TimezoneService.formatServerDate(null, "HH:mm"),
+                        type: "non-fuel",
                     }}
                     onValuesChange={(changed, all) => {
                         if (changed.quantity || changed.unitPrice) {
@@ -2608,62 +2992,22 @@ const SalesReportPage = () => {
                     >
                         <Input type="time" disabled={!isAdmin} />
                     </Form.Item>
+                    {/* Hidden field to maintain non-fuel type */}
+                    <Form.Item name="type" hidden>
+                        <Input />
+                    </Form.Item>
                     <Form.Item
-                        name="type"
-                        label="Type"
-                        rules={[{ required: true, message: "Please select type" }]}
+                        name="productId"
+                        label="Product"
+                        rules={[{ required: true, message: "Please select a product" }]}
                     >
-                        <Select placeholder="Select type">
-                            <Option value="fuel">Fuel</Option>
-                            <Option value="non-fuel">Non-Fuel</Option>
+                        <Select placeholder="Select product">
+                            {products.filter((p) => p.category !== "petrol" && p.category !== "diesel").map((p) => (
+                                <Option key={p.id} value={p.id}>
+                                    {p.productName}
+                                </Option>
+                            ))}
                         </Select>
-                    </Form.Item>
-                    <Form.Item shouldUpdate={(prev, curr) => prev.type !== curr.type}>
-                        {({ getFieldValue }) => {
-                            const type = getFieldValue('type');
-                            const filteredProducts = products.filter((p) => {
-                                if (type === "fuel") {
-                                    return p.category === "petrol" || p.category === "diesel";
-                                } else {
-                                    return p.category !== "petrol" && p.category !== "diesel";
-                                }
-                            });
-                            return (
-                                <Form.Item
-                                    name="productId"
-                                    label="Product"
-                                    rules={[{ required: true, message: "Please select a product" }]}
-                                >
-                                    <Select placeholder="Select product">
-                                        {filteredProducts.map((p) => (
-                                            <Option key={p.id} value={p.id}>
-                                                {p.productName}
-                                            </Option>
-                                        ))}
-                                    </Select>
-                                </Form.Item>
-                            );
-                        }}
-                    </Form.Item>
-                    <Form.Item shouldUpdate={(prev, curr) => prev.type !== curr.type}>
-                        {({ getFieldValue }) => {
-                            const type = getFieldValue('type');
-                            return type === "fuel" ? (
-                                <Form.Item
-                                    name="tankId"
-                                    label="Tank"
-                                    rules={[{ required: true, message: "Please select a tank" }]}
-                                >
-                                    <Select placeholder="Select tank">
-                                        {tanks.map(t => (
-                                            <Option key={t.id} value={t.id}>
-                                                {t.tankName}
-                                            </Option>
-                                        ))}
-                                    </Select>
-                                </Form.Item>
-                            ) : null;
-                        }}
                     </Form.Item>
                     <Form.Item
                         name="quantity"
@@ -2714,8 +3058,8 @@ const SalesReportPage = () => {
                     layout="vertical"
                     onFinish={handleSalesReturnInvoiceSubmit}
                     initialValues={{
-                        date: moment().format("YYYY-MM-DD"),
-                        time: moment().format("HH:mm"),
+                        date: TimezoneService.formatServerDate(null, "YYYY-MM-DD"),
+                        time: TimezoneService.formatServerDate(null, "HH:mm"),
                         type: "fuel",
                     }}
                     onValuesChange={(changed, all) => {
@@ -2738,62 +3082,35 @@ const SalesReportPage = () => {
                     >
                         <Input type="time" disabled={!isAdmin} />
                     </Form.Item>
+                    {/* Hidden field to maintain fuel type */}
+                    <Form.Item name="type" hidden>
+                        <Input />
+                    </Form.Item>
                     <Form.Item
-                        name="type"
-                        label="Type"
-                        rules={[{ required: true, message: "Please select type" }]}
+                        name="productId"
+                        label="Product"
+                        rules={[{ required: true, message: "Please select a product" }]}
                     >
-                        <Select placeholder="Select type">
-                            <Option value="fuel">Fuel</Option>
-                            <Option value="non-fuel">Non-Fuel</Option>
+                        <Select placeholder="Select product">
+                            {products.filter((p) => p.category === "petrol" || p.category === "diesel").map((p) => (
+                                <Option key={p.id} value={p.id}>
+                                    {p.productName}
+                                </Option>
+                            ))}
                         </Select>
                     </Form.Item>
-                    <Form.Item shouldUpdate={(prev, curr) => prev.type !== curr.type}>
-                        {({ getFieldValue }) => {
-                            const type = getFieldValue('type');
-                            const filteredProducts = products.filter((p) => {
-                                if (type === "fuel") {
-                                    return p.category === "petrol" || p.category === "diesel";
-                                } else {
-                                    return p.category !== "petrol" && p.category !== "diesel";
-                                }
-                            });
-                            return (
-                                <Form.Item
-                                    name="productId"
-                                    label="Product"
-                                    rules={[{ required: true, message: "Please select a product" }]}
-                                >
-                                    <Select placeholder="Select product">
-                                        {filteredProducts.map((p) => (
-                                            <Option key={p.id} value={p.id}>
-                                                {p.productName}
-                                            </Option>
-                                        ))}
-                                    </Select>
-                                </Form.Item>
-                            );
-                        }}
-                    </Form.Item>
-                    <Form.Item shouldUpdate={(prev, curr) => prev.type !== curr.type}>
-                        {({ getFieldValue }) => {
-                            const type = getFieldValue('type');
-                            return type === "fuel" ? (
-                                <Form.Item
-                                    name="tankId"
-                                    label="Tank"
-                                    rules={[{ required: true, message: "Please select a tank" }]}
-                                >
-                                    <Select placeholder="Select tank">
-                                        {tanks.map(t => (
-                                            <Option key={t.id} value={t.id}>
-                                                {t.tankName}
-                                            </Option>
-                                        ))}
-                                    </Select>
-                                </Form.Item>
-                            ) : null;
-                        }}
+                    <Form.Item
+                        name="tankId"
+                        label="Tank"
+                        rules={[{ required: true, message: "Please select a tank" }]}
+                    >
+                        <Select placeholder="Select tank">
+                            {tanks.map(t => (
+                                <Option key={t.id} value={t.id}>
+                                    {t.tankName}
+                                </Option>
+                            ))}
+                        </Select>
                     </Form.Item>
                     <Form.Item
                         name="quantity"
@@ -2845,8 +3162,8 @@ const SalesReportPage = () => {
                     onFinish={handlePurchaseInvoiceSubmit}
                     initialValues={{
                         purchaseType: "fuel",
-                        date: moment().format("YYYY-MM-DD"),
-                        time: moment().format("HH:mm"),
+                        date: TimezoneService.formatServerDate(null, "YYYY-MM-DD"),
+                        time: TimezoneService.formatServerDate(null, "HH:mm"),
                     }}
                     onValuesChange={(changed, all) => {
                         if (changed.purchaseType) setPurchaseType(all.purchaseType);
@@ -3045,9 +3362,9 @@ const SalesReportPage = () => {
                         currentReading: editingReading.currentReading,
                         tankId: editingReading.tankId,
                         newPrice: editingReading.effectivePrice,
-                        recordedAt: moment(editingReading.timestamp.toDate()).format("YYYY-MM-DDTHH:mm"),
+                        recordedAt: TimezoneService.formatServerDate(editingReading.timestamp.toDate(), "YYYY-MM-DDTHH:mm"),
                     } : {
-                        recordedAt: moment().format("YYYY-MM-DDTHH:mm"),
+                        recordedAt: TimezoneService.formatServerDate(null, "YYYY-MM-DDTHH:mm"),
                     }}
                 >
                     <Form.Item
@@ -3132,7 +3449,7 @@ const SalesReportPage = () => {
                     form={dipChartForm}
                     layout="vertical"
                     onFinish={handleDipChartSubmit}
-                    initialValues={{ recordedAt: moment().format("YYYY-MM-DDTHH:mm") }}
+                    initialValues={{ recordedAt: TimezoneService.formatServerDate(null, "YYYY-MM-DDTHH:mm") }}
                     onValuesChange={(changedValues) => {
                         if (changedValues.dipMm !== undefined) {
                             const computedLiters = window.getLiters(changedValues.dipMm);
@@ -3187,18 +3504,134 @@ const SalesReportPage = () => {
 
             {pdfPreviewVisible && (
                 <Modal
-                    title="PDF Preview"
+                    title={
+                        <div>
+                            <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>
+                                📊 Shift Report Preview
+                            </div>
+                            <div style={{ fontSize: '14px', color: '#666' }}>
+                                Review the report before ending the shift
+                            </div>
+                        </div>
+                    }
                     open={pdfPreviewVisible}
                     onCancel={() => setPdfPreviewVisible(false)}
-                    footer={null}
-                    width="80%"
+                    footer={
+                        <div style={{ textAlign: 'right' }}>
+                            <Space>
+                                <Button onClick={() => setPdfPreviewVisible(false)}>
+                                    Cancel
+                                </Button>
+                                <Button 
+                                    icon={<FilePdfOutlined />}
+                                    onClick={async () => {
+                                        try {
+                                            // Download the PDF
+                                            const selectedShift = shifts.find(s => s.id === currentShift.id);
+                                            if (!selectedShift) {
+                                                message.error("Selected shift not found");
+                                                return;
+                                            }
+
+                                            const shiftEndTime = selectedShift?.endTime
+                                                ? TimezoneService.createServerDate(selectedShift.endTime.toDate())
+                                                : TimezoneService.createServerDate();
+
+                                            const filteredSales = filterDataByShift(salesInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredSalesReturn = filterDataByShift(salesReturnInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredPurchase = filterDataByShift(purchaseInvoices).sort((a, b) => parseInvoiceDate(a.date) - parseInvoiceDate(b.date));
+                                            const filteredDip = filterDataByShift(dipChartData).sort((a, b) => parseInvoiceDate(a.recordedAt) - parseInvoiceDate(b.recordedAt));
+                                            const cumulativeDipChartData = dipChartData.filter(
+                                                (record) => record.recordedAt.toDate() <= shiftEndTime
+                                            );
+                                            
+                                            await exportReportToPDF({
+                                                settings,
+                                                reportType: 'shift',
+                                                dateRange: [TimezoneService.createServerDate(selectedShift.startTime.toDate()), selectedShift.endTime?.toDate() ? TimezoneService.createServerDate(selectedShift.endTime.toDate()) : TimezoneService.createServerDate()],
+                                                reportData,
+                                                filteredDipChartData: filteredDip,
+                                                filteredSalesInvoices: filteredSales,
+                                                filteredSalesReturnInvoices: filteredSalesReturn,
+                                                filteredPurchaseInvoices: filteredPurchase,
+                                                tanks, 
+                                                preview: false, 
+                                                dipChartData: cumulativeDipChartData, 
+                                                shiftSummary: shiftWiseSummaries[selectedShift.id] || { odhar: 0, wasooli: 0, discounts: 0 },
+                                            });
+                                            
+                                            message.success("PDF downloaded successfully!");
+                                        } catch (error) {
+                                            message.error("Failed to download PDF: " + error.message);
+                                        }
+                                    }}
+                                >
+                                    Download PDF
+                                </Button>
+                                <Popconfirm
+                                    title="End Current Shift"
+                                    description={
+                                        <div>
+                                            <p><strong>Are you sure you want to end the current shift?</strong></p>
+                                                                                         <p style={{ margin: "8px 0", color: "#595959" }}>
+                                                 This will:
+                                             </p>
+                                             <ul style={{ margin: 0, paddingLeft: "16px", color: "#595959" }}>
+                                                 <li>Transfer all nozzle readings (fuel sales) to the cashflow table</li>
+                                                 <li>Transfer all sales invoices to the cashflow table</li>
+                                                 <li>Transfer all purchase invoices to the cashflow table</li>
+                                                 <li>Transfer all adjustment entries (wasooli, odhar, karaya, salary, expenses, etc.) to the cashflow table</li>
+                                                 <li>Close the current shift permanently</li>
+                                                 <li>Start a new shift automatically</li>
+                                             </ul>
+                                            <p style={{ margin: "8px 0 0 0", color: "#ff4d4f", fontSize: "12px" }}>
+                                                <strong>⚠️ This action cannot be undone!</strong>
+                                            </p>
+                                        </div>
+                                    }
+                                    onConfirm={async () => {
+                                        try {
+                                            setPdfPreviewVisible(false);
+                                            await handleEndShift();
+                                            message.success("Shift ended successfully!");
+                                        } catch (error) {
+                                            message.error("Failed to end shift: " + error.message);
+                                        }
+                                    }}
+                                    okText="Yes, End Shift"
+                                    cancelText="Cancel"
+                                    okButtonProps={{ 
+                                        danger: true
+                                    }}
+                                >
+                                    <Button type="primary" danger>
+                                        🔚 End Shift
+                                    </Button>
+                                </Popconfirm>
+                            </Space>
+                        </div>
+                    }
+                    width="90%"
+                    style={{ top: 20 }}
                 >
+                    <div style={{ marginBottom: '16px', padding: '16px', backgroundColor: '#f5f5f5', borderRadius: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '16px' }}>📋</span>
+                            <strong>Shift Report Summary</strong>
+                        </div>
+                        <div style={{ fontSize: '14px', color: '#666' }}>
+                            This report contains all transactions, adjustments, and tank readings for the current shift.
+                            Review it carefully before ending the shift.
+                        </div>
+                    </div>
+                    
                     <iframe
                         title="PDF Preview"
                         src={pdfPreviewUrl}
                         width="100%"
                         height="600px"
-                    ></iframe>
+                        style={{ border: '1px solid #d9d9d9', borderRadius: '4px' }}
+                    />
                 </Modal>
             )}
         </div>

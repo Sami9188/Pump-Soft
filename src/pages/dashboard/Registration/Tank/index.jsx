@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     Table, Button, Modal, Form, Input, Space, Card,
     Typography, message, Tooltip, Popconfirm, Progress, InputNumber, Select, DatePicker
@@ -31,6 +32,7 @@ const TankManagement = () => {
     const [historyExportLoading, setHistoryExportLoading] = useState(false);
 
     const { isAdmin } = useAuth();
+    const navigate = useNavigate();
 
     useEffect(() => {
         fetchTanks();
@@ -179,9 +181,20 @@ const TankManagement = () => {
             const historyWithGainLoss = dipChartData.map(record => {
                 const bookStock = Number(record.bookStock);
                 const dipLiters = Number(record.dipLiters);
+                
+                // Handle cases where bookStock is missing/invalid
+                if (record.bookStock === null || record.bookStock === undefined || isNaN(bookStock)) {
+                    return { 
+                        ...record, 
+                        gain: "N/A", 
+                        loss: "N/A",
+                        hasValidBookStock: false
+                    };
+                }
+                
                 const gain = dipLiters > bookStock ? (dipLiters - bookStock).toFixed(2) : "0.00";
                 const loss = bookStock > dipLiters ? (bookStock - dipLiters).toFixed(2) : "0.00";
-                return { ...record, gain, loss };
+                return { ...record, gain, loss, hasValidBookStock: true };
             });
             // Reset the date range on opening the modal
             setHistoryDateRange(null);
@@ -216,11 +229,24 @@ const TankManagement = () => {
     const computeNetGainLoss = (tankId) => {
         const records = dipCharts.filter(record => record.tankId === tankId);
         let net = 0;
+        let validRecordsCount = 0;
+        
         records.forEach(record => {
             const bookStock = Number(record.bookStock);
             const dipLiters = Number(record.dipLiters);
-            net += (dipLiters - bookStock);
+            
+            // Only include records with valid bookStock for calculation
+            if (record.bookStock !== null && record.bookStock !== undefined && !isNaN(bookStock)) {
+                net += (dipLiters - bookStock);
+                validRecordsCount++;
+            }
         });
+        
+        // If no valid records, return indication
+        if (validRecordsCount === 0) {
+            return records.length > 0 ? "N/A (missing data)" : "No data";
+        }
+        
         if (net > 0) {
             return `${net.toFixed(2)} L gain`;
         } else if (net < 0) {
@@ -235,6 +261,15 @@ const TankManagement = () => {
             title: 'Tank Name',
             dataIndex: 'tankName',
             key: 'tankName',
+            render: (tankName, record) => (
+                <Button
+                    type="link"
+                    style={{ padding: 0, height: 'auto', color: '#1890ff', fontWeight: 'bold' }}
+                    onClick={() => navigate(`/dashboard/tank-details/${record.id}`)}
+                >
+                    {tankName}
+                </Button>
+            ),
             sorter: (a, b) => a.tankName.localeCompare(b.tankName),
         },
         {

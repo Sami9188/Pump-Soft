@@ -14,6 +14,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import dayjs from 'dayjs';
 import { useSettings } from '../../context/SettingsContext';
+import TimezoneService from '../../services/timezoneService';
 
 // Define role priority (highest to lowest)
 const ROLE_PRIORITY = ['admin', 'manager', 'salesman', 'user'];
@@ -31,19 +32,38 @@ const DashboardLayout = ({ children }) => {
   const [mobileView, setMobileView] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [pageTitle, setPageTitle] = useState('Dashboard');
-  const [currentDate, setCurrentDate] = useState(dayjs());
+  const [currentDate, setCurrentDate] = useState(null);
 
   // Compute the highest role for display
   const userRoles = user?.role || []; // Default to empty array if no roles
   const highestRole = ROLE_PRIORITY.find(role => userRoles.includes(role)) || 'guest';
   const displayRole = highestRole.charAt(0).toUpperCase() + highestRole.slice(1); // Capitalize, e.g., "Admin"
 
-  // Update current date every minute
+  // Fetch server time initially and then update every second
   useEffect(() => {
+    let isMounted = true;
+
+    const fetchTime = async () => {
+      try {
+        const serverTime = await TimezoneService.fetchServerTime();
+        if (isMounted) {
+          setCurrentDate(serverTime);
+        }
+      } catch (error) {
+        console.error("Failed to fetch server time. The header will not display the time.", error);
+      }
+    };
+
+    fetchTime(); // Initial fetch
+
     const timer = setInterval(() => {
-      setCurrentDate(dayjs());
-    }, 60000);
-    return () => clearInterval(timer);
+      setCurrentDate(prevDate => prevDate ? prevDate.clone().add(1, 'second') : null);
+    }, 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
   }, []);
 
   // Handle responsive behavior
@@ -103,12 +123,18 @@ const DashboardLayout = ({ children }) => {
     },
   ];
 
-  const formattedDate = {
+  const formattedDate = currentDate ? {
     day: currentDate.format('dddd'),
     date: currentDate.format('DD'),
     month: currentDate.format('MMMM'),
     year: currentDate.format('YYYY'),
     time: currentDate.format('hh:mm A'),
+  } : {
+    day: 'Loading...',
+    date: '',
+    month: '',
+    year: '',
+    time: 'Loading...',
   };
 
   return (
@@ -245,7 +271,7 @@ const DashboardLayout = ({ children }) => {
         </Content>
 
         <Footer className="text-center py-3 bg-transparent border-0">
-          <Text type="secondary" className="fs-7">{settings?.name} ©{new Date().getFullYear()}</Text>
+          <Text type="secondary" className="fs-7">{settings?.name} ©{TimezoneService.formatServerDate(null, 'YYYY')}</Text>
         </Footer>
       </Layout>
     </Layout>

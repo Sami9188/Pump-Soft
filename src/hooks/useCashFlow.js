@@ -10,9 +10,11 @@ import {
     orderBy,
     onSnapshot,
     serverTimestamp,
-    Timestamp
+    Timestamp,
+    where
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import TimezoneService from '../services/timezoneService';
 
 const useCashflow = () => {
     const [transactions, setTransactions] = useState([]);
@@ -183,18 +185,18 @@ const useCashflow = () => {
 
     // Get transactions for today
     const getTodayTransactions = () => {
-        const today = new Date();
-        const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59);
+        const today = TimezoneService.getCurrentMoment();
+        const startOfDay = today.startOf('day').toDate();
+        const endOfDay = today.endOf('day').toDate();
 
         return getTransactionsByDateRange(startOfDay, endOfDay);
     };
 
     // Get transactions for current month
     const getMonthTransactions = () => {
-        const today = new Date();
-        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-        const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        const today = TimezoneService.getCurrentMoment();
+        const startOfMonth = today.startOf('month').toDate();
+        const endOfMonth = today.endOf('month').toDate();
 
         return getTransactionsByDateRange(startOfMonth, endOfMonth);
     };

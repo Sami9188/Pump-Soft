@@ -14,6 +14,7 @@ import Registration from "./Registration"
 import Invoices from "./Invoices"
 import DailyReport from "./DailyReport"
 import AccountDetails from "./Account"
+import TankDetails from "./TankDetails"
 import Bills from "./Bills";
 import Cashflow from "./CashInOut";
 
@@ -126,6 +127,17 @@ export default function Dashboard() {
                         <PrivateRoute
                             component={AccountDetails}
                             allowedRoles={["admin"]}
+                            redirectPath="/dashboard/access-denied"
+                        />
+                    }
+                />
+
+                <Route
+                    path="tank-details/:tankId"
+                    element={
+                        <PrivateRoute
+                            component={TankDetails}
+                            allowedRoles={["admin", "manager"]}
                             redirectPath="/dashboard/access-denied"
                         />
                     }

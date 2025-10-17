@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { auth, db, googleProvider } from '../../config/firebase';
 import { Link, useNavigate } from 'react-router-dom';
 import { signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Form, Input, Button, Alert, Card, Divider, Typography } from 'antd';
 import { GoogleOutlined, MailOutlined, LockOutlined } from '@ant-design/icons';
 
@@ -34,7 +34,7 @@ export default function Login() {
                     email: user.email,
                     uid: user.uid,
                     role: ["user"],
-                    createdAt: new Date()
+                    createdAt: serverTimestamp()
                 });
             }
 
@@ -64,7 +64,7 @@ export default function Login() {
                     email: user.email,
                     uid: user.uid,
                     role: ["student"],
-                    createdAt: new Date()
+                    createdAt: serverTimestamp()
                 });
             }
 

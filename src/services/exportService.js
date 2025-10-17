@@ -123,8 +123,8 @@ const exportReportToPDF = async ({
         // Sales Summary and Adjustments using autoTable for clean alignment
         yPosition += 3;
 
+        // Wasooli and Odhar Adjustments
         const summaryData = [
-            ['Grand Total Sales:', (reportData.grandTotal ?? 0).toFixed(2)],
             ['Wasooli (Adjustment):', (reportData.adjustments.wasooli ?? 0).toFixed(2)],
             ['Odhar (Adjustment):', (reportData.adjustments.odhar ?? 0).toFixed(2)],
         ];
@@ -152,6 +152,33 @@ const exportReportToPDF = async ({
 
         const summaryFinalY = doc.lastAutoTable.finalY;
 
+        // Draw Grand Total Sales immediately after the left table (summaryData) ends
+        const grandTotalLabel = 'Grand Total Sales:';
+        const grandTotalValue = (reportData.grandTotal ?? 0).toFixed(2);
+
+        // Set styles for prominence
+        doc.setFontSize(13);
+        doc.setFont("helvetica", "bold");
+        const labelX = margin;
+        const valueX = margin + 70;
+        const boxY = summaryFinalY; // Position right after left table
+        const boxHeight = 10;
+        const boxWidth = 80;
+
+        // Draw border rectangle
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.5);
+        doc.rect(labelX, boxY, boxWidth, boxHeight);
+
+        // Draw label and value inside the box
+        doc.text(grandTotalLabel, labelX + 3, boxY + 6);
+        doc.text(grandTotalValue, valueX, boxY + 6, { align: "right" });
+
+        // Reset font for next content
+        doc.setFontSize(9);
+        doc.setFont("helvetica", "normal");
+
+        // Now draw the right table (other adjustments)
         autoTable(doc, {
             startY: yPosition,
             body: otherAdjustmentsData,
@@ -166,7 +193,9 @@ const exportReportToPDF = async ({
         });
         const adjFinalY = doc.lastAutoTable.finalY;
 
-        yPosition = Math.max(summaryFinalY, adjFinalY) + 3;
+        // Set yPosition to be after both the Grand Total box and the right table
+        yPosition = Math.max(summaryFinalY + boxHeight, adjFinalY) + 3;
+
         doc.line(margin, yPosition, pageWidth - margin, yPosition);
         yPosition += 3;
 
@@ -180,20 +209,7 @@ const exportReportToPDF = async ({
                 doc.text(group.categoryName.toUpperCase(), margin, yPosition);
                 yPosition += 3;
 
-                const sortedRecords = [...group.records].sort((a, b) => {
-                    const getNozzleNumber = (name) => {
-                        if (!name) return 0;
-                        const match = name.match(/\d+/);
-                        return match ? parseInt(match[0], 10) : 0;
-                    };
-
-                    const numA = getNozzleNumber(a.nozzleName);
-                    const numB = getNozzleNumber(b.nozzleName);
-
-                    return numB - numA;
-                });
-
-                const tableData = sortedRecords.map((r) => [
+                const tableData = group.records.map((r) => [
                     r.nozzleName || "Unknown",
                     (r.previousReading ?? 0).toFixed(2),
                     (r.currentReading ?? 0).toFixed(2),
@@ -218,8 +234,8 @@ const exportReportToPDF = async ({
                         fontSize: 9,
                         fontStyle: "bold",
                         halign: "center",
-                        fillColor: [0, 0, 0],
-                        textColor: [255, 255, 255],
+                        fillColor: [255, 255, 255], // white background
+                        textColor: [0, 0, 0],      // black text
                     },
                     bodyStyles: { fontSize: 8 },
                     columnStyles: {
@@ -269,7 +285,23 @@ const exportReportToPDF = async ({
         }
 
         if (dipChartData && tanks.length > 0) {
-            cumulativeTankData = tanks.map((tank) => {
+            // Sort tanks to ensure order: Diesel Tank 1, Diesel Tank 2, then Petrol Tank
+            const sortedTanks = [...tanks].sort((a, b) => {
+                const aName = a.tankName.toLowerCase();
+                const bName = b.tankName.toLowerCase();
+                
+                // Define priority order
+                const getPriority = (name) => {
+                    if (name.includes('diesel') && name.includes('1')) return 1;
+                    if (name.includes('diesel') && name.includes('2')) return 2;
+                    if (name.includes('petrol')) return 3;
+                    return 4; // Any other tanks
+                };
+                
+                return getPriority(aName) - getPriority(bName);
+            });
+            
+            cumulativeTankData = sortedTanks.map((tank) => {
                 const tankDipRecords = dipChartData.filter(
                     (record) => record.tankId === tank.id && record.bookStock !== undefined
                 );
@@ -296,8 +328,8 @@ const exportReportToPDF = async ({
                 fontSize: 9,
                 fontStyle: "bold",
                 halign: "center",
-                fillColor: [0, 0, 0],
-                textColor: [255, 255, 255],
+                fillColor: [255, 255, 255], // white background
+                textColor: [0, 0, 0],      // black text
             },
             bodyStyles: { fontSize: 8 },
             // columnStyles updated to remove the style for the deleted column
@@ -327,8 +359,8 @@ const exportReportToPDF = async ({
                 fontSize: 9,
                 fontStyle: "bold",
                 halign: "center",
-                fillColor: [0, 0, 0],
-                textColor: [255, 255, 255],
+                fillColor: [255, 255, 255], // white background
+                textColor: [0, 0, 0],      // black text
             },
             bodyStyles: { fontSize: 8, halign: "center" },
             columnStyles: {
@@ -345,44 +377,77 @@ const exportReportToPDF = async ({
         doc.line(margin, yPosition, pageWidth - margin, yPosition);
         yPosition += 3;
 
+        // Sort all invoices by timestamp for consistent ordering
+        const sortByTimestamp = (invoices) => {
+            return [...invoices].sort((a, b) => {
+                const dateA = a.timestamp || a.createdAt || new Date(0);
+                const dateB = b.timestamp || b.createdAt || new Date(0);
+                const parsedDateA = dateA && typeof dateA.toDate === "function" ? dateA.toDate() : new Date(dateA);
+                const parsedDateB = dateB && typeof dateB.toDate === "function" ? dateB.toDate() : new Date(dateB);
+                
+                if (parsedDateA.getTime() !== parsedDateB.getTime()) {
+                    return parsedDateA - parsedDateB;
+                }
+                // Fallback sort by document ID for stable ordering
+                return (a.id || '').localeCompare(b.id || '');
+            });
+        };
+
         // Sales and Purchase Invoices Side by Side
         if (filteredSalesInvoices.length > 0 || filteredPurchaseInvoices.length > 0) {
             let salesY = yPosition;
             let purchaseY = yPosition;
 
-            if (filteredSalesInvoices.length > 0) {
-                const salesData = filteredSalesInvoices.map((inv) => {
+            const sortedSalesInvoices = sortByTimestamp(filteredSalesInvoices);
+            const sortedPurchaseInvoices = sortByTimestamp(filteredPurchaseInvoices);
+
+            if (sortedSalesInvoices.length > 0) {
+                const salesData = sortedSalesInvoices.map((inv) => {
                     const total = (inv.quantity || 0) * (inv.unitPrice || 0);
                     const displayTotal = inv.source === 'singlePage'
                         ? '(Excluded)'
                         : total.toFixed(2);
+
+                    // Use the pre-calculated remaining stock from the invoice record
+                    let remainingStock = "N/A";
+                    if (inv.remainingStockAfter !== undefined && inv.remainingStockAfter !== null) {
+                        remainingStock = parseFloat(inv.remainingStockAfter).toFixed(2);
+                    }
 
                     return [
                         inv.productName || "Unknown",
                         inv.quantity || 0,
                         inv.unitPrice || 0,
                         displayTotal,
+                        remainingStock,
                     ];
                 });
 
-                const salesSubtotal = filteredSalesInvoices
+                const salesSubtotal = sortedSalesInvoices
                     .filter(inv => inv.source !== 'singlePage')
                     .reduce((sum, inv) => sum + ((inv.quantity || 0) * (inv.unitPrice || 0)), 0);
 
-                salesData.push(["", "", "Subtotal:", salesSubtotal.toFixed(2)]);
+                salesData.push(["", "", "Subtotal:", salesSubtotal.toFixed(2), ""]);
 
                 autoTable(doc, {
                     startY: salesY,
                     margin: { left: margin },
                     tableWidth: sideBySideTableWidth,
-                    head: [["Product", "Qty", "Unit Price", "Total"]],
+                    head: [["Product", "Qty", "Price", "Total", "Remaining"]],
                     body: salesData,
-                    headStyles: { fontSize: 9, fontStyle: "bold", halign: "center", fillColor: [0, 0, 0], textColor: [255, 255, 255] },
+                    headStyles: {
+                        fontSize: 9,
+                        fontStyle: "bold",
+                        halign: "center",
+                        fillColor: [255, 255, 255], // white background
+                        textColor: [0, 0, 0],      // black text
+                    },
                     bodyStyles: { fontSize: 8 },
                     columnStyles: {
                         1: { halign: "right" },
                         2: { halign: "right" },
                         3: { halign: "right" },
+                        4: { halign: "right" },
                     },
                     didParseCell: (data) => {
                         if (data.cell.raw === '(Excluded)') {
@@ -400,34 +465,44 @@ const exportReportToPDF = async ({
                 salesY = doc.lastAutoTable.finalY;
             }
 
-            if (filteredPurchaseInvoices.length > 0) {
-                const purchaseData = filteredPurchaseInvoices.map((inv) => [
-                    inv.supplierName || "Unknown",
-                    inv.productName || "Unknown",
-                    inv.quantity || 0,
-                    inv.unitPrice || 0,
-                    (inv.amount ?? 0).toFixed(2),
-                ]);
-                purchaseData.push(["", "", "", "Subtotal:", (reportData.purchaseInvoicesTotal ?? 0).toFixed(2)]);
+            if (sortedPurchaseInvoices.length > 0) {
+                const purchaseData = sortedPurchaseInvoices.map((inv) => {
+                    // Use the pre-calculated remaining stock from the invoice record
+                    let remainingStock = "N/A";
+                    if (inv.remainingStockAfter !== undefined && inv.remainingStockAfter !== null) {
+                        remainingStock = parseFloat(inv.remainingStockAfter).toFixed(2);
+                    }
+
+                    return [
+                        inv.supplierName || "Unknown",
+                        inv.productName || "Unknown",
+                        inv.quantity || 0,
+                        inv.unitPrice || 0,
+                        (inv.amount ?? 0).toFixed(2),
+                        remainingStock,
+                    ];
+                });
+                purchaseData.push(["", "", "", "Subtotal:", (reportData.purchaseInvoicesTotal ?? 0).toFixed(2), ""]);
 
                 autoTable(doc, {
                     startY: purchaseY,
                     margin: { left: margin + sideBySideTableWidth + sideBySideGap },
                     tableWidth: sideBySideTableWidth,
-                    head: [["Supplier", "Product", "Qty", "Unit Price", "Total"]],
+                    head: [["Supplier", "Product", "Qty", "Price", "Total", "Remaining"]],
                     body: purchaseData,
                     headStyles: {
                         fontSize: 9,
                         fontStyle: "bold",
                         halign: "center",
-                        fillColor: [0, 0, 0],
-                        textColor: [255, 255, 255],
+                        fillColor: [255, 255, 255], // white background
+                        textColor: [0, 0, 0],      // black text
                     },
                     bodyStyles: { fontSize: 8 },
                     columnStyles: {
                         2: { halign: "right" },
                         3: { halign: "right" },
                         4: { halign: "right", fontStyle: "bold" },
+                        5: { halign: "right" },
                     },
                     theme: "grid",
                     styles: { cellPadding: 0.5, lineWidth: 0.1, lineColor: 200 },
@@ -447,13 +522,23 @@ const exportReportToPDF = async ({
             doc.text("SALES RETURN INVOICES", margin, yPosition);
             yPosition += 3;
 
-            const salesReturnData = filteredSalesReturnInvoices.map((inv) => [
-                inv.productName || "Unknown",
-                inv.quantity || 0,
-                inv.unitPrice || 0,
-                ((inv.quantity || 0) * (inv.unitPrice || 0)).toFixed(2),
-            ]);
-            salesReturnData.push(["", "", "Subtotal:", (reportData.salesReturnInvoicesTotal ?? 0).toFixed(2)]);
+            const sortedSalesReturnInvoices = sortByTimestamp(filteredSalesReturnInvoices);
+
+            const salesReturnData = sortedSalesReturnInvoices.map((inv) => {
+                return [
+                    inv.productName || "Unknown",
+                    inv.quantity || 0,
+                    inv.unitPrice || 0,
+                    ((inv.quantity || 0) * (inv.unitPrice || 0)).toFixed(2),
+                ];
+            });
+
+            // Calculate subtotal from actual filtered data, excluding 'singlePage' items
+            const salesReturnSubtotal = sortedSalesReturnInvoices
+                .filter(inv => inv.source !== 'singlePage')
+                .reduce((sum, inv) => sum + ((inv.quantity || 0) * (inv.unitPrice || 0)), 0);
+
+            salesReturnData.push(["", "", "Subtotal:", salesReturnSubtotal.toFixed(2)]);
 
             autoTable(doc, {
                 startY: yPosition,
@@ -463,8 +548,8 @@ const exportReportToPDF = async ({
                     fontSize: 9,
                     fontStyle: "bold",
                     halign: "center",
-                    fillColor: [0, 0, 0],
-                    textColor: [255, 255, 255],
+                    fillColor: [255, 255, 255], // white background
+                    textColor: [0, 0, 0],      // black text
                 },
                 bodyStyles: { fontSize: 8 },
                 columnStyles: {

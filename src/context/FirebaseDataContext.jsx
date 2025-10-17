@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../config/firebase'; // Adjust the path as needed
 import { message } from 'antd'; // Optional: For displaying error messages
+import TimezoneService from '../services/timezoneService';
 
 // Create a context for Firebase data
 const FirebaseContext = createContext();
@@ -40,12 +41,12 @@ export const FirebaseDataProvider = ({ children }) => {
                 getDocs(collection(db, 'dipcharts')),
                 getDocs(collection(db, 'shifts')),
             ]);
-            setProducts(productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setTanks(tanksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setReadings(readingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setNozzles(nozzlesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setDipChartData(dipChartsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setShifts(shiftsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            setProducts(productsSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
+            setTanks(tanksSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
+            setReadings(readingsSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
+            setNozzles(nozzlesSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
+            setDipChartData(dipChartsSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
+            setShifts(shiftsSnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
         } catch (error) {
             message.error("Failed to fetch collection data: " + error.message);
         } finally {
@@ -58,7 +59,7 @@ export const FirebaseDataProvider = ({ children }) => {
         try {
             const colRef = collection(db, 'accounts');
             const querySnapshot = await getDocs(colRef);
-            const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) }));
             setAccounts(data);
         } catch (error) {
             console.error("Error fetching accounts:", error);
@@ -70,7 +71,7 @@ export const FirebaseDataProvider = ({ children }) => {
     const fetchSalesInvoices = async () => {
         try {
             const snapshot = await getDocs(collection(db, 'saleInvoices'));
-            setSalesInvoices(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            setSalesInvoices(snapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
         } catch (error) {
             message.error("Failed to fetch sales invoices: " + error.message);
         }
@@ -80,7 +81,7 @@ export const FirebaseDataProvider = ({ children }) => {
     const fetchSalesReturnInvoices = async () => {
         try {
             const snapshot = await getDocs(collection(db, 'saleReturnInvoices'));
-            setSalesReturnInvoices(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            setSalesReturnInvoices(snapshot.docs.map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) })));
         } catch (error) {
             message.error("Failed to fetch sales return invoices: " + error.message);
         }
@@ -91,7 +92,7 @@ export const FirebaseDataProvider = ({ children }) => {
         try {
             const snapshot = await getDocs(collection(db, 'purchaseInvoices'));
             const filtered = snapshot.docs
-                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .map(doc => ({ id: doc.id, ...TimezoneService.processFirebaseData(doc.data()) }))
                 .filter(inv => !inv.isNewPurchase);
             setPurchaseInvoices(filtered);
         } catch (error) {
@@ -107,7 +108,7 @@ export const FirebaseDataProvider = ({ children }) => {
             snapshot => {
                 const receiptsData = snapshot.docs.map(doc => ({
                     id: doc.id,
-                    ...doc.data()
+                    ...TimezoneService.processFirebaseData(doc.data())
                 }));
                 setReceipts(receiptsData);
             },
@@ -126,7 +127,7 @@ export const FirebaseDataProvider = ({ children }) => {
             snapshot => {
                 const discountsData = snapshot.docs.map(doc => ({
                     id: doc.id,
-                    ...doc.data()
+                    ...TimezoneService.processFirebaseData(doc.data())
                 }));
                 setDiscounts(discountsData);
             },

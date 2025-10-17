@@ -45,6 +45,9 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
     const pageHeight = pdf.internal.pageSize.getHeight();
     const margin = 15;
 
+    // Check if this is a transactions report to use compact styling
+    const isTransactionsReport = title.toLowerCase().includes('transaction') || title.toLowerCase().includes('receipts');
+
     // --- MODIFIED: Use a dynamic Y-position tracker ---
     let currentY = 0;
 
@@ -85,7 +88,7 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
     }
 
     // --- MODIFIED: Reduced vertical spacing from 7 to 6 ---
-    infoY += 6;
+    infoY += isTransactionsReport ? 4 : 6;
     pdf.setFontSize(10);
     pdf.setFont('helvetica', 'normal');
     pdf.setTextColor(80, 80, 80);
@@ -93,18 +96,18 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
         pdf.text(`Address: ${settings.location}`, infoX, infoY, { align: 'right' });
     }
 
-    infoY += 6;
+    infoY += isTransactionsReport ? 4 : 6;
     if (settings.companyPhone) {
         pdf.text(`Phone: ${settings.companyPhone}`, infoX, infoY, { align: 'right' });
     }
 
     // --- MODIFIED: Calculate the actual bottom of the header ---
     headerBottomY = Math.max(headerBottomY, infoY);
-    currentY = headerBottomY + 8; // Position title below the header with a smaller gap
+    currentY = headerBottomY + (isTransactionsReport ? 4 : 8); // Position title below the header with a smaller gap for transactions
 
     // Title with professional styling
     pdf.setTextColor(...brandColors.primary);
-    pdf.setFontSize(22);
+    pdf.setFontSize(isTransactionsReport ? 18 : 22);  // Smaller title for transactions
     pdf.setFont('helvetica', 'bold');
     pdf.text(title, headerTextX, currentY);
 
@@ -115,34 +118,36 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
     pdf.line(headerTextX, currentY + 2, headerTextX + titleWidth, currentY + 2);
 
     // --- MODIFIED: Position info box dynamically below the title ---
-    currentY += 10;
+    currentY += isTransactionsReport ? 6 : 10;
 
     // ===== DOCUMENT INFO BOX =====
 
     // Clean background box for document info
-    const dateBoxHeight = 15;
+    const dateBoxHeight = isTransactionsReport ? 10 : 15;  // Smaller info box for transactions
     pdf.setFillColor(...brandColors.background);
     pdf.setDrawColor(220, 220, 220);
     pdf.roundedRect(margin, currentY, pageWidth - (margin * 2), dateBoxHeight, 3, 3, 'FD');
 
     // Date and reference information
     pdf.setTextColor(100, 100, 100);
-    pdf.setFontSize(9);
+    pdf.setFontSize(isTransactionsReport ? 8 : 9);  // Smaller font for transactions
     pdf.text(`Generated: ${new Date().toLocaleDateString('en-US', {
         year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
-    })}`, margin + 5, currentY + 6);
+    })}`, margin + 5, currentY + (isTransactionsReport ? 4 : 6));
 
     // Reference number
     const refNumber = `Ref: ${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-    pdf.text(refNumber, pageWidth - margin - 5, currentY + 6, { align: 'right' });
+    pdf.text(refNumber, pageWidth - margin - 5, currentY + (isTransactionsReport ? 4 : 6), { align: 'right' });
 
-    // Document ID - bottom of info box
-    pdf.setFontSize(9);
-    pdf.setTextColor(130, 130, 130);
-    pdf.text(`Document ID: ${Math.random().toString(36).substring(2, 15).toUpperCase()}`, margin + 5, currentY + 12);
+    // Document ID - bottom of info box (only for non-transaction reports)
+    if (!isTransactionsReport) {
+        pdf.setFontSize(9);
+        pdf.setTextColor(130, 130, 130);
+        pdf.text(`Document ID: ${Math.random().toString(36).substring(2, 15).toUpperCase()}`, margin + 5, currentY + 12);
+    }
 
     // --- MODIFIED: Calculate starting position for content with a smaller gap ---
-    let contentStartY = currentY + dateBoxHeight + 10;
+    let contentStartY = currentY + dateBoxHeight + (isTransactionsReport ? 4 : 10);
 
     // ===== SUMMARY SECTION (ODHAR, WASOOLI, REMAINING) =====
     const summaryItems = [
@@ -152,9 +157,9 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
     ].filter(item => typeof item.value !== 'undefined' && item.value !== null);
 
     if (summaryItems.length > 0) {
-        // --- MODIFIED: Reduced box height from 25 to 20 ---
-        const boxHeight = 20;
-        const gap = 5;
+        // --- MODIFIED: Much smaller boxes for transactions ---
+        const boxHeight = isTransactionsReport ? 10 : 20;  // Very small for transactions
+        const gap = isTransactionsReport ? 2 : 5;  // Minimal gaps for transactions
         const totalGapsWidth = (summaryItems.length - 1) * gap;
         const boxWidth = (pageWidth - (margin * 2) - totalGapsWidth) / summaryItems.length;
         let currentX = margin;
@@ -162,81 +167,132 @@ const generatePDF = (title, columns, data, filename, summaryData = {}, options =
         summaryItems.forEach(item => {
             pdf.setFillColor(...brandColors.background);
             pdf.setDrawColor(220, 220, 220);
-            pdf.roundedRect(currentX, contentStartY, boxWidth, boxHeight, 3, 3, 'FD');
+            pdf.roundedRect(currentX, contentStartY, boxWidth, boxHeight, 2, 2, 'FD');
 
-            // --- MODIFIED: Adjusted text position for smaller box ---
-            pdf.setFontSize(10);
+            // --- MODIFIED: Much smaller fonts and tighter positioning ---
+            pdf.setFontSize(isTransactionsReport ? 6 : 10);  // Very small font for transactions
             pdf.setFont('helvetica', 'bold');
             pdf.setTextColor(...brandColors.secondary);
-            pdf.text(item.label, currentX + boxWidth / 2, contentStartY + 7, { align: 'center' });
+            pdf.text(item.label, currentX + boxWidth / 2, contentStartY + (isTransactionsReport ? 3 : 7), { align: 'center' });
 
-            pdf.setFontSize(14);
+            pdf.setFontSize(isTransactionsReport ? 8 : 14);  // Smaller value font for transactions
             pdf.setFont('helvetica', 'bold');
             pdf.setTextColor(...item.color);
             const formattedValue = typeof item.value === 'number' ? item.value.toLocaleString() : String(item.value);
-            pdf.text(formattedValue, currentX + boxWidth / 2, contentStartY + 15, { align: 'center' });
+            pdf.text(formattedValue, currentX + boxWidth / 2, contentStartY + (isTransactionsReport ? 8 : 15), { align: 'center' });
 
             currentX += boxWidth + gap;
         });
 
-        // --- MODIFIED: Reduced space after summary section from 10 to 8 ---
-        contentStartY += boxHeight + 8;
+        // --- MODIFIED: Minimal space after summary section ---
+        contentStartY += boxHeight + (isTransactionsReport ? 2 : 8);
     }
 
 
     // ===== TABLE SECTION =====
-
-    autoTable(pdf, {
-        head: [columns],
-        body: data,
-        startY: contentStartY,
-        styles: {
-            fontSize: 9,
-            // --- MODIFIED: Reduced cell padding for a tighter table ---
-            cellPadding: 3,
-            lineColor: [220, 220, 220],
-            lineWidth: 0.1,
-        },
-        headStyles: {
-            fillColor: brandColors.primary,
-            textColor: 255,
-            fontStyle: 'bold',
-            halign: 'center',
-            fontSize: 10,
-            // --- MODIFIED: Reduced header cell padding ---
-            cellPadding: 3.5,
-            lineWidth: 0,
-        },
-        alternateRowStyles: {
-            fillColor: [245, 247, 250]
-        },
-        columnStyles: {
-            0: {
+    
+    if (isTransactionsReport) {
+        // Use compact styling similar to daily report for transactions
+        autoTable(pdf, {
+            head: [columns],
+            body: data,
+            startY: contentStartY,
+            theme: 'grid',
+            styles: {
+                fontSize: 7,  // Smaller font for more compact layout
+                cellPadding: { top: 1, right: 2, bottom: 1, left: 2 },  // Minimal padding
+                lineColor: [200, 200, 200],
+                lineWidth: 0.1,
+                halign: 'center',
+            },
+            headStyles: {
+                fillColor: brandColors.primary,
+                textColor: 255,
                 fontStyle: 'bold',
-                textColor: brandColors.secondary
-            }
-        },
-        didDrawPage: (data) => {
-            pdf.setFontSize(8);
-            pdf.setTextColor(150, 150, 150);
-            pdf.text(`Page ${pdf.internal.getNumberOfPages()}`, pageWidth / 2, pageHeight - 10, { align: 'center' });
+                halign: 'center',
+                fontSize: 8,  // Slightly larger header font
+                cellPadding: { top: 2, right: 2, bottom: 2, left: 2 },
+                lineWidth: 0,
+            },
+            alternateRowStyles: {
+                fillColor: [248, 249, 250]  // Very light alternating rows
+            },
+            columnStyles: {
+                0: { halign: 'left', fontStyle: 'normal' },  // Date column left aligned
+                1: { halign: 'left', fontSize: 6 },  // Shift column smaller font
+                2: { halign: 'left' },  // Customer name left aligned
+                3: { halign: 'center' },  // Transaction type centered
+                4: { halign: 'right' },  // Amount right aligned
+                5: { halign: 'right' },  // Balance after right aligned
+                6: { halign: 'left', fontSize: 6 }  // Note smaller font
+            },
+            didDrawPage: (data) => {
+                // Minimal footer for compact design
+                pdf.setFontSize(6);
+                pdf.setTextColor(120, 120, 120);
+                pdf.text(`Page ${pdf.internal.getNumberOfPages()}`, pageWidth / 2, pageHeight - 5, { align: 'center' });
+                
+                if (settings.name) {
+                    pdf.setFont('helvetica', 'normal');
+                    pdf.text(settings.name, margin, pageHeight - 5);
+                }
+            },
+            ...options,
+        });
+    } else {
+        // Use original styling for other reports
+        autoTable(pdf, {
+            head: [columns],
+            body: data,
+            startY: contentStartY,
+            styles: {
+                fontSize: 9,
+                // --- MODIFIED: Reduced cell padding for a tighter table ---
+                cellPadding: 3,
+                lineColor: [220, 220, 220],
+                lineWidth: 0.1,
+            },
+            headStyles: {
+                fillColor: brandColors.primary,
+                textColor: 255,
+                fontStyle: 'bold',
+                halign: 'center',
+                fontSize: 10,
+                // --- MODIFIED: Reduced header cell padding ---
+                cellPadding: 3.5,
+                lineWidth: 0,
+            },
+            alternateRowStyles: {
+                fillColor: [245, 247, 250]
+            },
+            columnStyles: {
+                0: {
+                    fontStyle: 'bold',
+                    textColor: brandColors.secondary
+                }
+            },
+            didDrawPage: (data) => {
+                pdf.setFontSize(8);
+                pdf.setTextColor(150, 150, 150);
+                pdf.text(`Page ${pdf.internal.getNumberOfPages()}`, pageWidth / 2, pageHeight - 10, { align: 'center' });
 
-            if (settings.name) {
-                pdf.setFont('helvetica', 'bold');
-                pdf.setTextColor(...brandColors.primary);
-                pdf.text(settings.name, margin, pageHeight - 10);
-            }
+                if (settings.name) {
+                    pdf.setFont('helvetica', 'bold');
+                    pdf.setTextColor(...brandColors.primary);
+                    pdf.text(settings.name, margin, pageHeight - 10);
+                }
 
-            pdf.setFont('helvetica', 'italic');
-            pdf.setTextColor(150, 150, 150);
-            pdf.setFontSize(7);
-            pdf.text('CONFIDENTIAL', pageWidth - margin, pageHeight - 10, { align: 'right' });
+                pdf.setFont('helvetica', 'italic');
+                pdf.setTextColor(150, 150, 150);
+                pdf.setFontSize(7);
+                pdf.text('CONFIDENTIAL', pageWidth - margin, pageHeight - 10, { align: 'right' });
 
-            pdf.setFillColor(...brandColors.primary);
-            pdf.rect(0, pageHeight - 5, pageWidth, 5, 'F');
-        },
-        ...options,
-    });
+                pdf.setFillColor(...brandColors.primary);
+                pdf.rect(0, pageHeight - 5, pageWidth, 5, 'F');
+            },
+            ...options,
+        });
+    }
 
     // ===== SAVE DOCUMENT =====
     pdf.save(filename);

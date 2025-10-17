@@ -8,6 +8,7 @@ import { db } from '../../../../../config/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, where, orderBy, writeBatch, getDoc, increment, limit, startAfter, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { generatePDF } from '../../../../../services/pdfHelpers';
 import { useSettings } from '../../../../../context/SettingsContext';
+import TimezoneService from '../../../../../services/timezoneService';
 
 // Import the new CSS file
 // import './Expenses.css';
@@ -186,7 +187,6 @@ const Expenses = ({ expenses }) => {
                     const shiftId = shiftsSnap.docs[0].id;
 
                     const receiptDocRef = doc(collection(db, 'receipts'));
-                    const cashflowDocRef = doc(collection(db, 'cashflow'));
                     const globalSummaryRef = doc(db, 'summaries', 'global');
 
                     batch.set(receiptDocRef, {
@@ -199,9 +199,7 @@ const Expenses = ({ expenses }) => {
                         balanceAfter: initialBalance,
                         createdAt: serverTimestamp(),
                         shiftId: shiftId,
-                        cashflowId: cashflowDocRef.id,
                     });
-                    batch.set(cashflowDocRef, { amount: initialBalance, type: 'cashOut', category: 'expense', description: `Initial expense: ${values.accountName}`, date: Timestamp.now(), createdAt: serverTimestamp(), shiftId });
                     batch.update(accountRef, { currentBalance: increment(initialBalance), totalExpenses: increment(initialBalance) });
                     batch.update(globalSummaryRef, { totalExpenses: increment(initialBalance), totalRemaining: increment(initialBalance) });
                 }
@@ -297,7 +295,7 @@ const Expenses = ({ expenses }) => {
             };
 
             const title = `Receipts for ${selectedExpense?.accountName}`;
-            const filename = `Receipts_${selectedExpense?.accountName}_${moment().format('YYYYMMDD')}.pdf`;
+            const filename = `Receipts_${selectedExpense?.accountName}_${TimezoneService.formatServerDate(null, 'YYYYMMDD')}.pdf`;
 
             // *** MODIFIED: Pass the new summaryData and pdfOptions to generatePDF ***
             generatePDF(title, columns, data, filename, summaryData, pdfOptions, settings);
@@ -315,7 +313,7 @@ const Expenses = ({ expenses }) => {
         setIsReceiptModalVisible(true);
         receiptForm.resetFields();
         receiptForm.setFieldsValue({
-            date: moment().format('YYYY-MM-DDTHH:mm'),
+            date: TimezoneService.formatServerDate(null, 'YYYY-MM-DDTHH:mm'),
             transactionType: 'expense',
         });
     };
@@ -352,7 +350,6 @@ const Expenses = ({ expenses }) => {
             const accountRef = doc(db, 'accounts', accountId);
             const summaryRef = doc(db, 'summaries', 'global');
             const receiptDocRef = doc(collection(db, 'receipts'));
-            const cashflowDocRef = doc(collection(db, 'cashflow'));
 
             const accountSnap = await getDoc(accountRef);
             const currentBalance = accountSnap.data().currentBalance || 0;
@@ -368,9 +365,7 @@ const Expenses = ({ expenses }) => {
                 balanceAfter: newBalance,
                 createdAt: serverTimestamp(),
                 shiftId: shiftId,
-                cashflowId: cashflowDocRef.id,
             });
-            batch.set(cashflowDocRef, { amount, type: 'cashOut', category: 'expense', description: `Expense: ${selectedExpenseForReceipt.accountName}`, date: Timestamp.fromDate(transactionDate), createdAt: serverTimestamp(), shiftId });
             batch.update(accountRef, { currentBalance: increment(amount), totalExpenses: increment(amount) });
             batch.update(summaryRef, { totalExpenses: increment(amount), totalRemaining: increment(amount) });
 
@@ -393,7 +388,7 @@ const Expenses = ({ expenses }) => {
         const columns = ['Name', 'Balance'];
         const data = filteredExpenses.map((exp) => [exp.accountName, exp.currentBalance?.toFixed(2) || '0.00']);
         data.push(['Grand Total', grandTotals.totalRemaining.toFixed(2)]);
-        generatePDF('Expenses List', columns, data, `Expenses_List_${moment().format('YYYYMMDD')}.pdf`, {}, settings);
+        generatePDF('Expenses List', columns, data, `Expenses_List_${TimezoneService.formatServerDate(null, 'YYYYMMDD')}.pdf`, {}, settings);
     };
 
     const exportTransactionsToPDF = () => {
@@ -422,7 +417,7 @@ const Expenses = ({ expenses }) => {
         };
 
         const title = 'Last Expense Transactions';
-        const filename = `Expense_Transactions_${moment().format('YYYYMMDD')}.pdf`;
+        const filename = `Expense_Transactions_${TimezoneService.formatServerDate(null, 'YYYYMMDD')}.pdf`;
 
         // *** MODIFIED: Pass the new summaryData and pdfOptions to generatePDF ***
         generatePDF(title, columns, data, filename, summaryData, pdfOptions, settings);

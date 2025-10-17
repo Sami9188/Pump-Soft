@@ -9,6 +9,7 @@ import { useAuth } from '../../../../../context/AuthContext';
 import { db } from '../../../../../config/firebase';
 import { generatePDF } from '../../../../../services/pdfHelpers';
 import { useSettings } from '../../../../../context/SettingsContext';
+import TimezoneService from '../../../../../services/timezoneService';
 import { clone } from 'chart.js/helpers';
 
 const { Title } = Typography;
@@ -49,31 +50,163 @@ const DateInput = ({ value, onChange }) => {
     return <input type="date" value={dateString} onChange={handleChange} className="date-input w-100" />;
 };
 
-// CSS styles
-const styles = `
-    .date-range-container {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-    }
+    // CSS styles
+    const styles = `
+        .date-range-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            flex-wrap: wrap;
+        }
 
-    .date-range-container label {
-        margin-right: 8px;
-        font-weight: 500;
-    }
+        .date-range-container label {
+            margin-right: 8px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
 
-    /* Custom class for date inputs in modals for better control */
-    .modal-date-input {
-        padding: 4px 11px;
-        border: 1px solid #d9d9d9;
-        border-radius: 6px;
-        transition: all 0.3s;
-    }
-    .modal-date-input:hover {
-        border-color: #40a9ff;
-    }
-`;
+        /* Custom class for date inputs in modals for better control */
+        .modal-date-input {
+            padding: 4px 11px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            transition: all 0.3s;
+            min-width: 120px;
+        }
+        .modal-date-input:hover {
+            border-color: #40a9ff;
+        }
+
+        /* Customer Summary Card Styles */
+        .customer-summary-card {
+            margin-bottom: 24px;
+            background-color: #fafafa;
+            border-radius: 8px;
+        }
+
+        .customer-summary-card .ant-card-head {
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #d9d9d9;
+        }
+
+        .customer-summary-card .ant-card-body {
+            padding: 20px;
+        }
+
+        .summary-metric {
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid;
+            transition: all 0.3s ease;
+        }
+
+        .summary-metric:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .summary-metric-small {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid;
+            transition: all 0.3s ease;
+        }
+
+        .summary-metric-small:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .customer-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        /* Mobile Responsiveness */
+        @media (max-width: 768px) {
+            .date-range-container {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+            
+            .date-range-container label {
+                margin-bottom: 4px;
+                margin-right: 0;
+            }
+            
+            .modal-date-input {
+                width: 100% !important;
+                min-width: unset;
+            }
+            
+            .customer-summary-card .ant-card-body {
+                padding: 16px;
+            }
+            
+            .summary-metric, .summary-metric-small {
+                margin-bottom: 8px;
+            }
+
+            .customer-info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .customer-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .customer-header .ant-space {
+                margin-top: 16px;
+                justify-content: center;
+            }
+            
+            .customer-header .ant-input {
+                width: 100% !important;
+            }
+
+            /* Fix for blank white screen issue */
+            .ant-modal-content {
+                max-height: 90vh;
+                overflow-y: auto;
+            }
+
+            .ant-table {
+                font-size: 12px;
+            }
+
+            .ant-table .ant-table-thead > tr > th,
+            .ant-table .ant-table-tbody > tr > td {
+                padding: 8px 4px;
+            }
+        }
+
+        /* Additional mobile fixes */
+        @media (max-width: 768px) {
+            .ant-modal {
+                margin: 16px;
+            }
+
+            .ant-modal-content {
+                border-radius: 8px;
+            }
+
+            .ant-table-scroll {
+                overflow-x: auto;
+            }
+
+            /* Ensure modals don't cause blank screens */
+            .ant-modal-body {
+                max-height: 70vh;
+                overflow-y: auto;
+            }
+        }
+    `;
 
 function Customers({ customers }) {
     const { user } = useAuth();
@@ -87,8 +220,8 @@ function Customers({ customers }) {
     const canEditCustomer = isAdmin;
     const canDeleteCustomer = isAdmin;
     const canShare = isAdmin || isManager;
-    const canViewReceipts = isAdmin || isManager;
-    const canAddReceipt = isAdmin || isManager || isSalesman; // Allow salesman to add receipts
+    const canViewReceipts = isAdmin || isManager || isSalesman; // Allow salesman to view receipts
+    const canAddReceipt = isAdmin || isManager; // Remove salesman access to receipts (Udhar/Wasooli)
     const canExportPDF = isAdmin || isManager;
 
     // State Variables
@@ -105,6 +238,7 @@ function Customers({ customers }) {
     const [receipts, setReceipts] = useState([]);
     const [receiptsLoading, setReceiptsLoading] = useState(false);
     const [receiptDateRange, setReceiptDateRange] = useState(['', '']);
+    const [vehicleNumberFilter, setVehicleNumberFilter] = useState('');
     const [isReceiptModalVisible, setIsReceiptModalVisible] = useState(false);
     const [receiptForm] = Form.useForm();
     const [selectedCustomerForReceipt, setSelectedCustomerForReceipt] = useState(null);
@@ -263,7 +397,7 @@ function Customers({ customers }) {
                 });
                 message.success('Customer updated');
             } else {
-                const tempId = 'temp-' + Date.now();
+                const tempId = 'temp-' + TimezoneService.createServerDate().getTime();
                 const newCust = {
                     ...customerData,
                     id: tempId,
@@ -346,43 +480,111 @@ function Customers({ customers }) {
 
     // Receipt Handlers
     const handleViewReceipts = cust => {
-        setSelectedCustomer(cust);
-        setReceiptModalVisible(true);
-        setReceiptDateRange(['', '']);
-        setReceipts(customerSummaries[cust.id]?.transactions || []);
+        try {
+            console.log('Opening receipts modal for customer:', cust);
+            setSelectedCustomer(cust);
+            setReceiptModalVisible(true);
+            setReceiptDateRange(['', '']);
+            const transactions = customerSummaries[cust.id]?.transactions || [];
+            console.log('Setting receipts:', transactions.length);
+            setReceipts(transactions);
+        } catch (error) {
+            console.error('Error opening receipts modal:', error);
+            message.error('Failed to open receipts modal');
+        }
     };
 
     const handleCloseReceiptsModal = () => {
         setReceiptModalVisible(false);
         setSelectedCustomer(null);
         setReceipts([]);
+        setVehicleNumberFilter('');
     };
 
     const filteredReceipts = useMemo(() => {
+        let filtered = receipts;
+        
+        // Filter by date range
         if (receiptDateRange[0] && receiptDateRange[1]) {
             const start = moment(receiptDateRange[0]).startOf('day');
             const end = moment(receiptDateRange[1]).endOf('day');
-            return receipts.filter(r => {
-                if (r.id === 'initial') return true;
-                const d = moment(r.date.toDate());
-                return d.isBetween(start, end, null, '[]');
+            filtered = filtered.filter(r => {
+                // Always exclude initial balance row when date filters are applied
+                if (r.id === 'initial') return false;
+                
+                let receiptDate;
+                if (r.date && typeof r.date.toDate === 'function') {
+                    // Handle Firestore Timestamp
+                    receiptDate = moment(r.date.toDate());
+                } else if (r.date && typeof r.date === 'string') {
+                    // Handle legacy string dates
+                    try {
+                        receiptDate = moment(r.date);
+                    } catch (err) {
+                        console.warn('Invalid date string for filtering:', r.date);
+                        return false;
+                    }
+                } else if (r.date instanceof Date) {
+                    // Handle JavaScript Date objects
+                    receiptDate = moment(r.date);
+                } else {
+                    console.warn('Unknown date format for filtering:', r.id, 'date:', r.date, 'type:', typeof r.date);
+                    return false;
+                }
+                
+                return receiptDate.isBetween(start, end, null, '[]');
             });
         }
-        return receipts;
-    }, [receipts, receiptDateRange]);
+        
+        // Filter by vehicle number
+        if (vehicleNumberFilter) {
+            filtered = filtered.filter(r => {
+                // Always exclude initial balance row when vehicle filters are applied
+                if (r.id === 'initial') return false;
+                return r.vehicleNumber && r.vehicleNumber.toLowerCase().includes(vehicleNumberFilter.toLowerCase());
+            });
+        }
+        
+        return filtered;
+    }, [receipts, receiptDateRange, vehicleNumberFilter]);
 
     const exportReceiptsToPDF = () => {
         if (!selectedCustomer) return;
         setReceiptsLoading(true);
         try {
-            const columns = ['Date', 'Transaction Type', 'Amount', 'Running Balance', 'Note'];
-            const data = filteredReceipts.map(r => [
-                r.id === 'initial' ? 'Initial Balance' : moment(r.date.toDate()).format('YYYY-MM-DD'),
-                r.id === 'initial' ? 'Initial Balance' : (r.transactionType === 'wasooli' ? 'Wasooli (Payment)' : 'Odhar (Credit)'),
-                r.id === 'initial' ? '-' : parseFloat(r.amount || 0).toFixed(2),
-                r.runningBalance.toFixed(2),
-                r.note || '-',
-            ]);
+            const columns = ['Date', 'Vehicle Number', 'Transaction Type', 'Amount', 'Running Balance', 'Note'];
+            
+            // Always exclude initial balance row from PDF export, regardless of filters
+            const pdfData = filteredReceipts.filter(r => r.id !== 'initial').map(r => {
+                let formattedDate;
+                try {
+                    if (r.date && typeof r.date.toDate === 'function') {
+                        // Handle Firestore Timestamp
+                        formattedDate = moment(r.date.toDate()).format('YYYY-MM-DD');
+                    } else if (r.date && typeof r.date === 'string') {
+                        // Handle legacy string dates
+                        formattedDate = moment(r.date).format('YYYY-MM-DD');
+                    } else if (r.date instanceof Date) {
+                        // Handle JavaScript Date objects
+                        formattedDate = moment(r.date).format('YYYY-MM-DD');
+                    } else {
+                        console.warn('Unknown date format for receipt:', r.id, 'date:', r.date, 'type:', typeof r.date);
+                        formattedDate = 'Invalid Date';
+                    }
+                } catch (dateError) {
+                    console.error('Error formatting date for receipt:', r.id, 'date:', r.date, 'error:', dateError);
+                    formattedDate = 'Error';
+                }
+
+                return [
+                    formattedDate,
+                    r.vehicleNumber || '-',
+                    r.transactionType === 'wasooli' ? 'Wasooli (Payment)' : 'Odhar (Credit)',
+                    parseFloat(r.amount || 0).toFixed(2),
+                    r.runningBalance.toFixed(2),
+                    r.note || '-',
+                ];
+            });
 
             // *** NEW: Calculate summary for the PDF header ***
             const periodSummary = filteredReceipts.reduce((acc, r) => {
@@ -407,11 +609,13 @@ function Customers({ customers }) {
 
             const options = {
                 didParseCell: d => {
-                    if (d.section === 'body' && d.column.index === 2 && d.cell.text !== '-') {
-                        const txType = filteredReceipts[d.row.index].transactionType;
+                    if (d.section === 'body' && d.column.index === 3 && d.cell.text !== '-') {
+                        // Get the transaction type from the filtered data (excluding initial balance)
+                        const filteredData = filteredReceipts.filter(r => r.id !== 'initial');
+                        const txType = filteredData[d.row.index]?.transactionType;
                         d.cell.styles.textColor = txType === 'odhar' ? [207, 19, 34] : [63, 134, 0];
                     }
-                    if (d.section === 'body' && d.column.index === 3) {
+                    if (d.section === 'body' && d.column.index === 4) {
                         const val = parseFloat(d.cell.text);
                         d.cell.styles.textColor = val >= 0 ? [63, 134, 0] : [207, 19, 34];
                     }
@@ -422,7 +626,7 @@ function Customers({ customers }) {
             generatePDF(
                 `Receipts for ${selectedCustomer?.accountName}`,
                 columns,
-                data,
+                pdfData,
                 `Receipts_${selectedCustomer?.accountName}_${moment().format('YYYYMMDD')}.pdf`,
                 summaryData, // 5th argument: summary object
                 options,     // 6th argument: options object
@@ -513,6 +717,7 @@ function Customers({ customers }) {
                 accountType: 'customer',
                 date: transactionDate,
                 amount: amount,
+                vehicleNumber: values.vehicleNumber || '',
                 note: values.note || '',
                 transactionType: receiptType,
                 balanceAfter: newBalance,
@@ -832,16 +1037,54 @@ ${COMPANY_PHONE}
 
     // START: MODIFIED SECTION
     const exportTransactionsToPDF = () => {
-        const columns = ['Date', 'Shift', 'Customer', 'Type', 'Amount', 'Balance After', 'Note'];
+        const columns = ['Date', 'Shift', 'Customer', 'Vehicle', 'Type', 'Amount', 'Balance After', 'Note'];
         const data = transactionsList.map(tx => {
-            const shift = shifts.find(s => s.id === tx.shiftId);
-            const shiftText = shift
-                ? `${moment(shift.startTime.toDate()).format('YYYY-MM-DD HH:mm')} - ${shift.endTime ? moment(shift.endTime.toDate()).format('HH:mm') : 'Ongoing'}`
-                : 'Unknown';
+            let formattedDate = 'Invalid Date';
+            let shiftText = 'Unknown';
+            
+            try {
+                // Format transaction date
+                if (tx.date && typeof tx.date.toDate === 'function') {
+                    formattedDate = moment(tx.date.toDate()).format('YYYY-MM-DD');
+                } else if (tx.date && typeof tx.date === 'string') {
+                    formattedDate = moment(tx.date).format('YYYY-MM-DD');
+                } else if (tx.date instanceof Date) {
+                    formattedDate = moment(tx.date).format('YYYY-MM-DD');
+                }
+                
+                // Format shift time
+                const shift = shifts.find(s => s.id === tx.shiftId);
+                if (shift) {
+                    let start = 'Unknown';
+                    let end = 'Ongoing';
+                    
+                    if (shift.startTime && typeof shift.startTime.toDate === 'function') {
+                        start = moment(shift.startTime.toDate()).format('YYYY-MM-DD HH:mm');
+                    } else if (shift.startTime && typeof shift.startTime === 'string') {
+                        start = moment(shift.startTime).format('YYYY-MM-DD HH:mm');
+                    } else if (shift.startTime instanceof Date) {
+                        start = moment(shift.startTime).format('YYYY-MM-DD HH:mm');
+                    }
+                    
+                    if (shift.endTime && typeof shift.endTime.toDate === 'function') {
+                        end = moment(shift.endTime.toDate()).format('HH:mm');
+                    } else if (shift.endTime && typeof shift.endTime === 'string') {
+                        end = moment(shift.endTime).format('HH:mm');
+                    } else if (shift.endTime instanceof Date) {
+                        end = moment(shift.endTime).format('HH:mm');
+                    }
+                    
+                    shiftText = `${start} - ${end}`;
+                }
+            } catch (dateError) {
+                console.error('Error formatting transaction data for export:', dateError);
+            }
+            
             return [
-                moment(tx.date.toDate()).format('YYYY-MM-DD'),
+                formattedDate,
                 shiftText,
                 tx.accountName,
+                tx.vehicleNumber || '-',
                 tx.transactionType === 'wasooli' ? 'Wasooli' : 'Odhar',
                 parseFloat(tx.amount || 0).toFixed(2),
                 tx.balanceAfter !== undefined ? parseFloat(tx.balanceAfter).toFixed(2) : '-',
@@ -909,11 +1152,54 @@ ${COMPANY_PHONE}
             title: 'Next Collection Date',
             dataIndex: 'nextCollectionDate',
             key: 'nextCollectionDate',
-            render: date => (date ? moment(date.toDate()).format('YYYY-MM-DD') : '-'),
+            render: date => {
+                if (!date) return '-';
+                try {
+                    if (date && typeof date.toDate === 'function') {
+                        return moment(date.toDate()).format('YYYY-MM-DD');
+                    } else if (date && typeof date === 'string') {
+                        return moment(date).format('YYYY-MM-DD');
+                    } else if (date instanceof Date) {
+                        return moment(date).format('YYYY-MM-DD');
+                    } else {
+                        console.warn('Unknown date format for next collection date:', date, 'type:', typeof date);
+                        return 'Invalid Date';
+                    }
+                } catch (dateError) {
+                    console.error('Error formatting next collection date:', date, 'error:', dateError);
+                    return 'Error';
+                }
+            },
             sorter: (a, b) => {
-                const dateA = a.nextCollectionDate ? a.nextCollectionDate.toDate().getTime() : 0;
-                const dateB = b.nextCollectionDate ? b.nextCollectionDate.toDate().getTime() : 0;
-                return dateA - dateB;
+                try {
+                    let dateA = 0;
+                    let dateB = 0;
+                    
+                    if (a.nextCollectionDate) {
+                        if (typeof a.nextCollectionDate.toDate === 'function') {
+                            dateA = a.nextCollectionDate.toDate().getTime();
+                        } else if (typeof a.nextCollectionDate === 'string') {
+                            dateA = moment(a.nextCollectionDate).valueOf();
+                        } else if (a.nextCollectionDate instanceof Date) {
+                            dateA = a.nextCollectionDate.getTime();
+                        }
+                    }
+                    
+                    if (b.nextCollectionDate) {
+                        if (typeof b.nextCollectionDate.toDate === 'function') {
+                            dateB = b.nextCollectionDate.toDate().getTime();
+                        } else if (typeof b.nextCollectionDate === 'string') {
+                            dateB = moment(b.nextCollectionDate).valueOf();
+                        } else if (b.nextCollectionDate instanceof Date) {
+                            dateB = b.nextCollectionDate.getTime();
+                        }
+                    }
+                    
+                    return dateA - dateB;
+                } catch (dateError) {
+                    console.error('Error sorting next collection dates:', dateError);
+                    return 0;
+                }
             },
         },
         {
@@ -1000,7 +1286,33 @@ ${COMPANY_PHONE}
             key: 'date',
             render: (d, r) => {
                 if (r.id === 'initial') return 'Initial Balance';
-                return moment(d.toDate()).format('YYYY-MM-DD');
+                if (d && typeof d.toDate === 'function') {
+                    // Handle Firestore Timestamp
+                    return moment(d.toDate()).format('YYYY-MM-DD');
+                } else if (d && typeof d === 'string') {
+                    // Handle legacy string dates
+                    try {
+                        return moment(d).format('YYYY-MM-DD');
+                    } catch (err) {
+                        console.warn('Invalid date string:', d);
+                        return '-';
+                    }
+                } else if (d instanceof Date) {
+                    // Handle JavaScript Date objects
+                    return moment(d).format('YYYY-MM-DD');
+                }
+                // Fallback for invalid/missing date
+                console.warn('Unknown date format for receipt:', r.id, 'date:', d, 'type:', typeof d);
+                return '-';
+            },
+        },
+        {
+            title: 'Vehicle Number',
+            dataIndex: 'vehicleNumber',
+            key: 'vehicleNumber',
+            render: (vehicleNumber, r) => {
+                if (r.id === 'initial') return '-';
+                return vehicleNumber || '-';
             },
         },
         {
@@ -1057,22 +1369,70 @@ ${COMPANY_PHONE}
     ];
 
     const transactionsColumns = [
-        { title: 'Date', dataIndex: 'date', key: 'date', render: d => moment(d.toDate()).format('YYYY-MM-DD') },
+        { 
+            title: 'Date', 
+            dataIndex: 'date', 
+            key: 'date', 
+            render: d => {
+                if (!d) return '-';
+                try {
+                    if (d && typeof d.toDate === 'function') {
+                        // Handle Firestore Timestamp
+                        return moment(d.toDate()).format('YYYY-MM-DD');
+                    } else if (d && typeof d === 'string') {
+                        // Handle legacy string dates
+                        return moment(d).format('YYYY-MM-DD');
+                    } else if (d instanceof Date) {
+                        // Handle JavaScript Date objects
+                        return moment(d).format('YYYY-MM-DD');
+                    } else {
+                        console.warn('Unknown date format for transaction:', d, 'type:', typeof d);
+                        return 'Invalid Date';
+                    }
+                } catch (dateError) {
+                    console.error('Error formatting transaction date:', d, 'error:', dateError);
+                    return 'Error';
+                }
+            }
+        },
         {
             title: 'Shift',
             key: 'shift',
             render: (_, record) => {
                 const shift = shifts.find(s => s.id === record.shiftId);
                 if (shift) {
-                    const start = moment(shift.startTime.toDate()).format('YYYY-MM-DD HH:mm');
-                    const end = shift.endTime ? moment(shift.endTime.toDate()).format('HH:mm') : 'Ongoing';
-                    return `${start} - ${end}`;
+                    try {
+                        let start = 'Unknown';
+                        let end = 'Ongoing';
+                        
+                        if (shift.startTime && typeof shift.startTime.toDate === 'function') {
+                            start = moment(shift.startTime.toDate()).format('YYYY-MM-DD HH:mm');
+                        } else if (shift.startTime && typeof shift.startTime === 'string') {
+                            start = moment(shift.startTime).format('YYYY-MM-DD HH:mm');
+                        } else if (shift.startTime instanceof Date) {
+                            start = moment(shift.startTime).format('YYYY-MM-DD HH:mm');
+                        }
+                        
+                        if (shift.endTime && typeof shift.endTime.toDate === 'function') {
+                            end = moment(shift.endTime.toDate()).format('HH:mm');
+                        } else if (shift.endTime && typeof shift.endTime === 'string') {
+                            end = moment(shift.endTime).format('HH:mm');
+                        } else if (shift.endTime instanceof Date) {
+                            end = moment(shift.endTime).format('HH:mm');
+                        }
+                        
+                        return `${start} - ${end}`;
+                    } catch (dateError) {
+                        console.error('Error formatting shift time:', dateError);
+                        return 'Date Error';
+                    }
                 } else {
                     return 'Unknown';
                 }
             },
         },
         { title: 'Customer', dataIndex: 'accountName', key: 'accountName' },
+        { title: 'Vehicle', dataIndex: 'vehicleNumber', key: 'vehicleNumber', render: v => v || '-' },
         { title: 'Type', dataIndex: 'transactionType', key: 'transactionType' },
         { title: 'Amount', dataIndex: 'amount', key: 'amount', render: a => parseFloat(a).toFixed(2) },
         {
@@ -1135,20 +1495,100 @@ ${COMPANY_PHONE}
                 </Space>
             </div>
 
-            <Card
-                type="inner"
-                title="Grand Totals (Across All Customers)"
-                style={{ marginBottom: 20, fontSize: 18, fontWeight: 'bold' }}
+            {/* Overall Customer Summary Card */}
+            <Card 
+                type="inner" 
+                title="Overall Customer Summary" 
+                className="customer-summary-card"
+                size="small"
             >
-                <Space size="large">
-                    <span>Total Wasooli: {grandTotals.totalWasooli.toFixed(2)}</span>
-                    <span>Total Odhar: {grandTotals.totalOdhar.toFixed(2)}</span>
-                    <span>
-                        Remaining:{' '}
-                        <span style={{ color: grandTotals.remaining >= 0 ? '#3f8600' : '#cf1322' }}>
-                            {grandTotals.remaining.toFixed(2)}
+                {/* First Row - Financial Summary */}
+                <Space size="large" wrap style={{ marginBottom: '16px' }}>
+                    <div className="summary-metric" style={{ 
+                        backgroundColor: '#f6ffed', 
+                        border: '1px solid #b7eb8f'
+                    }}>
+                        <Typography.Text strong style={{ color: '#52c41a' }}>Total Wasooli (Payments):</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '16px', fontWeight: 'bold', color: '#52c41a' }}>
+                            Rs {grandTotals.totalWasooli.toFixed(2)}
                         </span>
-                    </span>
+                    </div>
+                    <div className="summary-metric" style={{ 
+                        backgroundColor: '#fff2e8', 
+                        border: '1px solid #ffbb96'
+                    }}>
+                        <Typography.Text strong style={{ color: '#fa8c16' }}>Total Odhar (Credit):</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '16px', fontWeight: 'bold', color: '#fa8c16' }}>
+                            Rs {grandTotals.totalOdhar.toFixed(2)}
+                        </span>
+                    </div>
+                    <div className="summary-metric" style={{ 
+                        backgroundColor: grandTotals.remaining >= 0 ? '#f6ffed' : '#fff2e8', 
+                        border: `1px solid ${grandTotals.remaining >= 0 ? '#b7eb8f' : '#ffbb96'}`
+                    }}>
+                        <Typography.Text strong style={{ color: grandTotals.remaining >= 0 ? '#52c41a' : '#fa8c16' }}>
+                            Net Balance:
+                        </Typography.Text>
+                        <br />
+                        <span style={{ 
+                            marginLeft: '8px', 
+                            fontSize: '16px', 
+                            fontWeight: 'bold', 
+                            color: grandTotals.remaining >= 0 ? '#52c41a' : '#fa8c16' 
+                        }}>
+                            Rs {grandTotals.remaining.toFixed(2)}
+                        </span>
+                        <br />
+                        <small style={{ color: grandTotals.remaining >= 0 ? '#52c41a' : '#fa8c16' }}>
+                            {grandTotals.remaining >= 0 ? '(Company owes customers)' : '(Customers owe company)'}
+                        </small>
+                    </div>
+                </Space>
+
+                {/* Second Row - Customer Counts and Additional Metrics */}
+                <Space size="large" wrap>
+                    <div className="summary-metric-small" style={{ 
+                        backgroundColor: '#f0f5ff', 
+                        border: '1px solid #91d5ff'
+                    }}>
+                        <Typography.Text strong style={{ color: '#1890ff' }}>Total Customers:</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 'bold', color: '#1890ff' }}>
+                            {customersData.length}
+                        </span>
+                    </div>
+                    <div className="summary-metric-small" style={{ 
+                        backgroundColor: '#f9f0ff', 
+                        border: '1px solid #d3adf7'
+                    }}>
+                        <Typography.Text strong style={{ color: '#722ed1' }}>Active Customers:</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 'bold', color: '#722ed1' }}>
+                            {customersData.filter(c => c.status === 'active').length}
+                        </span>
+                    </div>
+                    <div className="summary-metric-small" style={{ 
+                        backgroundColor: '#fff7e6', 
+                        border: '1px solid #ffd591'
+                    }}>
+                        <Typography.Text strong style={{ color: '#d46b08' }}>Customers with Dues:</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 'bold', color: '#d46b08' }}>
+                            {Object.values(customerSummaries).filter(summary => summary.remaining < 0).length}
+                        </span>
+                    </div>
+                    <div className="summary-metric-small" style={{ 
+                        backgroundColor: '#f6ffed', 
+                        border: '1px solid #b7eb8f'
+                    }}>
+                        <Typography.Text strong style={{ color: '#52c41a' }}>Customers with Credit:</Typography.Text>
+                        <br />
+                        <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 'bold', color: '#52c41a' }}>
+                            {Object.values(customerSummaries).filter(summary => summary.remaining > 0).length}
+                        </span>
+                    </div>
                 </Space>
             </Card>
 
@@ -1200,13 +1640,13 @@ ${COMPANY_PHONE}
                             name="initialBalance"
                             label="Initial Balance"
                             rules={[{ required: !editingId, message: 'Please enter initial balance' }]}
+                            help="Positive for advance payment, negative for outstanding dues"
                             // Initial balance can't be edited after creation
                             hidden={!!editingId}
                         >
                             <InputNumber
-                                min={0}
                                 style={{ width: '100%' }}
-                                placeholder="0.00"
+                                placeholder="0.00 (use negative for dues)"
                                 formatter={value => `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                                 parser={value => value.replace(/\$\s?|(,*)/g, '')}
                             />
@@ -1237,7 +1677,7 @@ ${COMPANY_PHONE}
                 open={receiptModalVisible}
                 onCancel={handleCloseReceiptsModal}
                 footer={
-                    <Space>
+                    <Space wrap>
                         {canShare && (
                             <>
                                 <Button icon={<MessageOutlined />} onClick={() => handleShareBalance('message')}>
@@ -1256,8 +1696,43 @@ ${COMPANY_PHONE}
                         <Button onClick={handleCloseReceiptsModal}>Close</Button>
                     </Space>
                 }
-                width={800}
+                width="90%"
+                style={{ maxWidth: '800px' }}
+                destroyOnClose
             >
+                {/* Customer Information Card */}
+                <Card 
+                    type="inner" 
+                    title="Customer Information" 
+                    style={{ marginBottom: '1rem' }}
+                    size="small"
+                >
+                    <div className="customer-info-grid">
+                        <div>
+                            <Typography.Text strong>Contact Number:</Typography.Text>
+                            <br />
+                            <Typography.Text>{selectedCustomer?.phoneNumber || 'Not provided'}</Typography.Text>
+                        </div>
+                        <div>
+                            <Typography.Text strong>Credit Limit:</Typography.Text>
+                            <br />
+                            <Typography.Text>
+                                {selectedCustomer?.creditLimit ? `Rs ${selectedCustomer.creditLimit.toFixed(2)}` : 'Not set'}
+                            </Typography.Text>
+                        </div>
+                        <div>
+                            <Typography.Text strong>Next Collection Date:</Typography.Text>
+                            <br />
+                            <Typography.Text>
+                                {selectedCustomer?.nextCollectionDate 
+                                    ? moment(selectedCustomer.nextCollectionDate.toDate()).format('YYYY-MM-DD')
+                                    : 'Not set'
+                                }
+                            </Typography.Text>
+                        </div>
+                    </div>
+                </Card>
+
                 <div className="date-range-container" style={{ marginBottom: '1rem' }}>
                     <label>From:</label>
                     <input
@@ -1273,22 +1748,42 @@ ${COMPANY_PHONE}
                         onChange={e => setReceiptDateRange([receiptDateRange[0], e.target.value])}
                         className="modal-date-input"
                     />
+                    <label>Vehicle:</label>
+                    <Input
+                        placeholder="Filter by vehicle number"
+                        value={vehicleNumberFilter}
+                        onChange={e => setVehicleNumberFilter(e.target.value)}
+                        style={{ width: '100%', minWidth: '200px' }}
+                        allowClear
+                    />
                 </div>
 
                 {receiptsLoading ? (
                     <Spin size="large" tip="Loading receipts..." />
-                ) : filteredReceipts.length === 0 ? (
-                    <p>No receipts found for this date range.</p>
+                ) : !filteredReceipts || filteredReceipts.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '20px' }}>
+                        <p>No receipts found for this date range.</p>
+                        {receipts.length > 0 && (
+                            <p style={{ fontSize: '12px', color: '#666' }}>
+                                Try adjusting your filters or date range.
+                            </p>
+                        )}
+                    </div>
                 ) : (
-                    <Table
-                        dataSource={filteredReceipts}
-                        columns={receiptColumns}
-                        rowKey="id"
-                        pagination={false}
-                        bordered
-                        size="small"
-                        scroll={{ x: 'max-content' }}
-                    />
+                    <div style={{ overflowX: 'auto' }}>
+                        <Table
+                            dataSource={filteredReceipts}
+                            columns={receiptColumns}
+                            rowKey="id"
+                            pagination={false}
+                            bordered
+                            size="small"
+                            scroll={{ x: 'max-content' }}
+                            locale={{
+                                emptyText: 'No receipts found'
+                            }}
+                        />
+                    </div>
                 )}
             </Modal>
 
@@ -1297,7 +1792,9 @@ ${COMPANY_PHONE}
                 open={isReceiptModalVisible}
                 onCancel={() => setIsReceiptModalVisible(false)}
                 footer={null}
-                width={400}
+                width="90%"
+                style={{ maxWidth: '400px' }}
+                destroyOnClose
             >
                 <Form form={receiptForm} layout="vertical" onFinish={handleAddReceipt}>
                     <Form.Item
@@ -1313,6 +1810,9 @@ ${COMPANY_PHONE}
                         rules={[{ required: true, message: 'Please enter amount' }]}
                     >
                         <InputNumber min={0} step={0.01} style={{ width: '100%' }} placeholder="0.00" />
+                    </Form.Item>
+                    <Form.Item name="vehicleNumber" label="Vehicle Number">
+                        <Input placeholder="Enter vehicle number" />
                     </Form.Item>
                     <Form.Item name="note" label="Note">
                         <Input.TextArea />
@@ -1336,7 +1836,9 @@ ${COMPANY_PHONE}
                 open={isTransactionsModalVisible}
                 onCancel={() => setIsTransactionsModalVisible(false)}
                 footer={null}
-                width={1200}
+                width="95%"
+                style={{ maxWidth: '1200px' }}
+                destroyOnClose
             >
                 <Space wrap style={{ marginBottom: 16, alignItems: 'center' }}>
                     <Select

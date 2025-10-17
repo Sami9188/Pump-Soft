@@ -8,6 +8,7 @@ import { db } from '../../../../../config/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, where, orderBy, limit, increment, getDoc, setDoc, Timestamp, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { generatePDF } from '../../../../../services/pdfHelpers';
 import { useSettings } from '../../../../../context/SettingsContext';
+import TimezoneService from '../../../../../services/timezoneService';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -218,7 +219,7 @@ const Banks = ({ banks: initialBanks = [] }) => {
         setReceiptType(type);
         receiptForm.resetFields();
         // Set default date to today in YYYY-MM-DD format for native input
-        receiptForm.setFieldsValue({ date: moment().format('YYYY-MM-DD'), transactionType: type });
+        receiptForm.setFieldsValue({ date: TimezoneService.formatServerDate(null, 'YYYY-MM-DD'), transactionType: type });
         setIsReceiptModalVisible(true);
     };
 
@@ -337,7 +338,7 @@ const Banks = ({ banks: initialBanks = [] }) => {
         if (totals) {
             tableData.push([], ...Object.entries(totals).map(([key, value]) => [key, '', '', value]));
         }
-        generatePDF(title, columns, tableData, `${title.replace(/\s+/g, '_')}_${moment().format('YYYYMMDD')}.pdf`, {}, settings);
+        generatePDF(title, columns, tableData, `${title.replace(/\s+/g, '_')}_${TimezoneService.formatServerDate(null, 'YYYYMMDD')}.pdf`, {}, settings);
         message.success('Exported to PDF');
     };
 

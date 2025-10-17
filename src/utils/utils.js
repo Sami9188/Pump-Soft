@@ -1,14 +1,16 @@
 import moment from 'moment';
+import TimezoneService from '../services/timezoneService';
 
 export function calculateAmountOwed(account, transactions) {
     if (account.accountType !== 'staff' || !account.salary) return 0;
 
-    let startDate = new Date(account.createdAt);
+    let startDate = TimezoneService.createServerDate(account.createdAt);
     const totalPaid = transactions
         .filter(tx => tx.transactionType === 'pay')
         .reduce((sum, { amount }) => sum + parseFloat(amount || 0), 0);
     const dailyRate = parseFloat(account.salary) / 30;
-    const daysWorked = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
+    const currentDate = TimezoneService.createServerDate();
+    const daysWorked = Math.floor((currentDate - startDate) / (1000 * 60 * 60 * 24));
     const totalEarned = dailyRate * daysWorked;
     return Math.round((totalEarned - totalPaid) * 100) / 100;
 }

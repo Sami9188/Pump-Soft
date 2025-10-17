@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { auth, db, googleProvider } from '../../config/firebase';
 import { Link, useNavigate } from 'react-router-dom';
 import { createUserWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Form, Input, Button, Alert, Card, Divider, Typography } from 'antd';
 import { GoogleOutlined, UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
 
@@ -28,7 +28,7 @@ export default function SignUp() {
                 email: email,
                 uid: user.uid,
                 role: ["seller"],
-                createdAt: new Date()
+                createdAt: serverTimestamp()
             });
 
             navigate('/dashboard'); // Redirect after signup
@@ -48,7 +48,7 @@ export default function SignUp() {
                 email: user.email,
                 uid: user.uid,
                 role: ["seller"],
-                createdAt: new Date()
+                createdAt: serverTimestamp()
             }, { merge: true }); // Using merge option to avoid overwriting
 
             navigate('/dashboard');

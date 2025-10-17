@@ -34,6 +34,7 @@ import { Link } from 'react-router-dom';
 import moment from 'moment';
 import { useAuth } from '../../../../../context/AuthContext';
 import { db } from '../../../../../config/firebase';
+import TimezoneService from '../../../../../services/timezoneService';
 import {
     collection,
     getDocs,
@@ -166,7 +167,7 @@ function Suppliers({ suppliers }) {
             return {
                 id: d.id,
                 ...data,
-                date: data.date && data.date.toDate ? data.date.toDate() : new Date(),
+                date: data.date && data.date.toDate ? TimezoneService.fromFirebaseTimestamp(data.date) : TimezoneService.createServerDate(),
                 amount: Number(data.amount || 0),
             };
         });
@@ -325,7 +326,7 @@ function Suppliers({ suppliers }) {
             ];
         });
         data.push(['', 'Grand Total Payable:', grandTotals.netPayable.toFixed(2)]);
-        const filename = `Suppliers_List_${moment().format('YYYY-MM-DD')}.pdf`;
+        const filename = `Suppliers_List_${TimezoneService.formatServerDate(null, 'YYYY-MM-DD')}.pdf`;
         generatePDF(title, columns, data, filename, {}, settings);
     };
 
@@ -348,7 +349,8 @@ function Suppliers({ suppliers }) {
             return receipts;
         }
         return receipts.filter(r => {
-            if (r.id === 'initial') return true;
+            // Always exclude initial balance row when date filters are applied
+            if (r.id === 'initial') return false;
             return moment(r.date).isBetween(moment(start), moment(end).add(1, 'day'));
         });
     }, [receipts, receiptDateRange]);
@@ -359,8 +361,10 @@ function Suppliers({ suppliers }) {
 
         const title = `Transaction History for ${selectedSupplier.accountName}`;
         const columns = ['Date', 'Type', 'Purchase', 'Payment', 'Balance After', 'Note'];
-        const data = filteredReceipts.map(r => [
-            r.id === 'initial' ? 'Initial Balance' : moment(r.date).format('DD-MM-YYYY'),
+        
+        // Always exclude initial balance row from PDF export, regardless of filters
+        const pdfData = filteredReceipts.filter(r => r.id !== 'initial').map(r => [
+            moment(r.date).format('DD-MM-YYYY'),
             r.transactionType,
             r.transactionType === 'odhar' ? r.amount.toFixed(2) : '0.00',
             r.transactionType === 'wasooli' ? r.amount.toFixed(2) : '0.00',
@@ -389,17 +393,17 @@ function Suppliers({ suppliers }) {
             remaining: finalBalance             // Final outstanding balance
         };
 
-        const filename = `Receipts_${selectedSupplier.accountName}_${moment().format('YYYY-MM-DD')}.pdf`;
+        const filename = `Receipts_${selectedSupplier.accountName}_${TimezoneService.formatServerDate(null, 'YYYY-MM-DD')}.pdf`;
 
         // *** MODIFIED: Pass the new summaryData to generatePDF ***
-        generatePDF(title, columns, data, filename, summaryData, {}, settings);
+        generatePDF(title, columns, pdfData, filename, summaryData, {}, settings);
     };
 
     const showReceiptModal = (sup, type) => {
         setSelectedSupplierForReceipt(sup);
         setReceiptType(type);
         receiptForm.setFieldsValue({
-            date: moment().format('YYYY-MM-DD'),
+            date: TimezoneService.formatServerDate(null, 'YYYY-MM-DD'),
             amount: null,
             note: '',
             transactionType: type,
@@ -431,12 +435,8 @@ function Suppliers({ suppliers }) {
             const balanceChange = receiptType === 'odhar' ? amount : -amount;
             const newBalance = currentBalance + balanceChange;
 
-            const cashflowType = receiptType === 'odhar' ? 'cashOut' : 'cashIn';
-            const cashflowCategory = receiptType === 'odhar' ? 'purchase' : 'supplier_payment';
-
             const batch = writeBatch(db);
             const receiptDocRef = doc(collection(db, 'receipts'));
-            const cashflowDocRef = doc(collection(db, 'cashflow'));
             const globalSummaryRef = doc(db, 'summaries', 'global');
 
             batch.set(receiptDocRef, {
@@ -447,17 +447,6 @@ function Suppliers({ suppliers }) {
                 note: values.note || '',
                 transactionType: receiptType,
                 balanceAfter: newBalance,
-                createdAt: serverTimestamp(),
-                shiftId,
-                cashflowId: cashflowDocRef.id,
-            });
-
-            batch.set(cashflowDocRef, {
-                amount,
-                type: cashflowType,
-                category: cashflowCategory,
-                description: `Receipt for ${selectedSupplierForReceipt.accountName}`,
-                date: Timestamp.fromDate(receiptDate),
                 createdAt: serverTimestamp(),
                 shiftId,
             });
@@ -628,7 +617,7 @@ ${COMPANY_PHONE}
                 return {
                     id: d.id,
                     ...data,
-                    date: data.date && data.date.toDate ? data.date.toDate() : new Date(),
+                    date: data.date && data.date.toDate ? TimezoneService.fromFirebaseTimestamp(data.date) : TimezoneService.createServerDate(),
                     accountName: suppliersMap[data.accountId] || 'Unknown Supplier',
                 };
             });
@@ -766,7 +755,7 @@ ${COMPANY_PHONE}
             remaining: periodSummary.purchases - periodSummary.payments
         };
 
-        const filename = `Supplier_Transactions_${moment().format('YYYY-MM-DD')}.pdf`;
+        const filename = `Supplier_Transactions_${TimezoneService.formatServerDate(null, 'YYYY-MM-DD')}.pdf`;
 
         // *** MODIFIED: Pass the new summaryData to generatePDF ***
         generatePDF(title, columns, data, filename, summaryData, {}, settings);
