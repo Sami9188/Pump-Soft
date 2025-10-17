@@ -2,6 +2,7 @@ import moment from 'moment-timezone';
 
 // Default server timezone - you can configure this based on your server location
 const DEFAULT_SERVER_TIMEZONE = 'Asia/Karachi'; // Pakistan timezone - adjust as needed
+// Force rebuild for Vercel deployment
 
 // Global timezone configuration
 let serverTimezone = DEFAULT_SERVER_TIMEZONE;
